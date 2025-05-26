@@ -340,8 +340,8 @@ Gathering some of the common expressions, and noting that
 
 $$
 \begin{align*}
-H_i^T k_i &= H_i^T (-G_i^{-1} h_i) = (- H_i^T (G_i^{-1})^T) h_i = (-G_i^{-1} H_i) h_i = K_i h_i \\
-H_i^T K_i &= H_i^T (-G_i^{-1} H_i) = (- H_i^T (G_i^{-1})^T) H_i = (-G_i^{-1} H_i) H_i = K_i H_i ,
+H_i^T k_i &= H_i^T (-G_i^{-1} h_i) = (- H_i^T (G_i^{-1})^T) h_i = (-G_i^{-1} H_i)^T h_i = K_i^T h_i \\
+H_i^T K_i &= H_i^T (-G_i^{-1} H_i) = (- H_i^T (G_i^{-1})^T) H_i = (-G_i^{-1} H_i)^T H_i = K_i^T H_i ,
 \end{align*}
 $$
 
