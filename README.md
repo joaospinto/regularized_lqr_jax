@@ -82,7 +82,7 @@ $$
 \begin{bmatrix}
 P &       C^T &         G^T \\
 C & -\delta I &           0 \\
-G &         0 & -W - \eta I
+G &         0 & -W - \frac{1}{\eta} I
 \end{bmatrix}
 \begin{bmatrix}
 \Delta x \\
@@ -98,20 +98,20 @@ $$
 
 where $\delta, \eta > 0$ and $W$ is a diagonal matrix with positive elements.
 
-Note that $\Delta z$ can be eliminated via $\Delta z = (W + \eta I)^{-1}(G \Delta x + r_z)$,
+Note that $\Delta z$ can be eliminated via $\Delta z = (W + \frac{1}{\eta} I)^{-1}(G \Delta x + r_z)$,
 resulting in
 
 $$
 \begin{bmatrix}
-P + G^T (W + \eta I)^{-1} G &       C^T \\
-C                           & -\delta I
+P + G^T (W + \frac{1}{\eta} I)^{-1} G  &       C^T \\
+C                                      & -\delta I
 \end{bmatrix}
 \begin{bmatrix}
 \Delta x \\
 \Delta y
 \end{bmatrix} = -
 \begin{bmatrix}
-r_x + G^T (W + \eta I)^{-1} r_z \\
+r_x + G^T (W + \frac{1}{\eta} I)^{-1} r_z \\
 r_y
 \end{bmatrix}.
 $$
