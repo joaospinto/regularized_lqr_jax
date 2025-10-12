@@ -1,10 +1,12 @@
 import unittest
 
+from itertools import product
+
 import jax
 from jax import numpy as jnp
 
 from regularized_lqr_jax.helpers import compute_residual, symmetrize, regularize
-from regularized_lqr_jax.solver import solve
+from regularized_lqr_jax.solver import solve, solve_parallel
 
 jax.config.update("jax_enable_x64", True)
 
@@ -47,69 +49,44 @@ class TestRegularizedLQR(unittest.TestCase):
         key, subkey = jax.random.split(key)
         self.r = jax.random.uniform(subkey, (T, m))
 
-    def test_regularized(self):
-        δ = 0.5
+    def test(self):
+        test_data = product([0.5, 0.0], [False, True])
 
-        X, U, Y = solve(
-            A=self.A,
-            B=self.B,
-            Q=self.Q,
-            M=self.M,
-            R=self.R,
-            q=self.q,
-            r=self.r,
-            c=self.c,
-            δ=δ,
-        )
+        for δ, use_parallel_method in test_data:
+            with self.subTest(δ=δ, use_parallel_method=use_parallel_method):
+                method = solve_parallel if use_parallel_method else solve
 
-        residual = compute_residual(
-            A=self.A,
-            B=self.B,
-            Q=self.Q,
-            M=self.M,
-            R=self.R,
-            q=self.q,
-            r=self.r,
-            c=self.c,
-            X=X,
-            U=U,
-            Y=Y,
-            δ=δ,
-        )
+                X, U, Y, P, p, K, k = method(
+                    A=self.A,
+                    B=self.B,
+                    Q=self.Q,
+                    M=self.M,
+                    R=self.R,
+                    q=self.q,
+                    r=self.r,
+                    c=self.c,
+                    δ=δ,
+                )
 
-        self.assertLess(jnp.linalg.norm(residual), 1e-9)
+                residual = compute_residual(
+                    A=self.A,
+                    B=self.B,
+                    Q=self.Q,
+                    M=self.M,
+                    R=self.R,
+                    q=self.q,
+                    r=self.r,
+                    c=self.c,
+                    X=X,
+                    U=U,
+                    Y=Y,
+                    δ=δ,
+                )
 
-    def test_unregularized(self):
-        δ = 0.0
-
-        X, U, Y = solve(
-            A=self.A,
-            B=self.B,
-            Q=self.Q,
-            M=self.M,
-            R=self.R,
-            q=self.q,
-            r=self.r,
-            c=self.c,
-            δ=δ,
-        )
-
-        residual = compute_residual(
-            A=self.A,
-            B=self.B,
-            Q=self.Q,
-            M=self.M,
-            R=self.R,
-            q=self.q,
-            r=self.r,
-            c=self.c,
-            X=X,
-            U=U,
-            Y=Y,
-            δ=δ,
-        )
-
-        self.assertLess(jnp.linalg.norm(residual), 1e-9)
+                if use_parallel_method:
+                    self.assertLess(jnp.linalg.norm(residual), 1e-3)
+                else:
+                    self.assertLess(jnp.linalg.norm(residual), 1e-9)
 
 
 if __name__ == "__main__":
