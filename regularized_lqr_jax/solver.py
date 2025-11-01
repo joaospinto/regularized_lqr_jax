@@ -283,9 +283,9 @@ def solve_parallel(
         x0 = solve_symmetric_positive_definite_system(F[0], -f[0])
 
         def get_elem(t):
-            # x_{i+1} = F_i^{-1} (A_i x_i + B_i u_i - f_i)
+            # x_{i+1} = F_{i+1}^{-1} (A_i x_i + B_i u_i - f_{i+1})
             # u_i = K_i x_i + k_i
-            # x_{i+1} = F_i^{-1} ((A_i + B_i K_i) x_i + B_i k_i - f_i)
+            # x_{i+1} = F_{i+1}^{-1} ((A_i + B_i K_i) x_i + B_i k_i - f_{i+1})
             F_inv_ApBK = solve_symmetric_positive_definite_system(
                 F[t + 1],
                 A[t] + B[t] @ K[t],
