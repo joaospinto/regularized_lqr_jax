@@ -214,7 +214,7 @@ def solve_parallel(
             jnp.concatenate(
                 [
                     jax.vmap(lambda t: δ * jnp.eye(n) + BRinv[t] @ B[t].T)(jnp.arange(T)),
-                    (δ * jnp.eye(n)).reshape([1, n, n]),
+                    jnp.zeros([1, n, n]),
                 ]
             ),
             # The p vectors (-eta, in the notation of https://ieeexplore.ieee.org/document/9697418).
