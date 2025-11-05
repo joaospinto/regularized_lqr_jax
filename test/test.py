@@ -1,7 +1,5 @@
 import unittest
 
-from itertools import product
-
 import jax
 from jax import numpy as jnp
 
@@ -49,11 +47,12 @@ class TestRegularizedLQR(unittest.TestCase):
         key, subkey = jax.random.split(key)
         self.r = jax.random.uniform(subkey, (T, m))
 
-    def test(self):
-        test_data = product([0.5, 0.0], [False, True])
+        key, subkey = jax.random.split(key)
+        self.Δ = jnp.abs(jax.random.uniform(subkey, (n,)))
 
-        for δ, use_parallel_method in test_data:
-            with self.subTest(δ=δ, use_parallel_method=use_parallel_method):
+    def test(self):
+        for use_parallel_method in [False, True]:
+            with self.subTest(use_parallel_method=use_parallel_method):
                 method = solve_parallel if use_parallel_method else solve
 
                 X, U, Y, P, p, K, k = method(
@@ -65,7 +64,7 @@ class TestRegularizedLQR(unittest.TestCase):
                     q=self.q,
                     r=self.r,
                     c=self.c,
-                    δ=δ,
+                    Δ=self.Δ,
                 )
 
                 residual = compute_residual(
@@ -80,7 +79,7 @@ class TestRegularizedLQR(unittest.TestCase):
                     X=X,
                     U=U,
                     Y=Y,
-                    δ=δ,
+                    Δ=self.Δ,
                 )
 
                 if use_parallel_method:

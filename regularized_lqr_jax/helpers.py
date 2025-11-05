@@ -87,7 +87,7 @@ def compute_residual(
     X: jnp.ndarray,
     U: jnp.ndarray,
     Y: jnp.ndarray,
-    δ: float,
+    Δ: jnp.ndarray,
 ):
     T = A.shape[0]
 
@@ -100,9 +100,9 @@ def compute_residual(
                 jnp.arange(T)
             ).flatten(),
             (Q[T] @ X[T] - Y[T] + q[T]),
-            (-X[0] - δ * Y[0] + c[0]),
+            (-X[0] - Δ[0] * Y[0] + c[0]),
             jax.vmap(
-                lambda i: A[i] @ X[i] + B[i] @ U[i] - X[i + 1] + c[i + 1] - δ * Y[i + 1]
+                lambda i: A[i] @ X[i] + B[i] @ U[i] - X[i + 1] + c[i + 1] - Δ[i + 1] * Y[i + 1]
             )(jnp.arange(T)).flatten(),
         ]
     )

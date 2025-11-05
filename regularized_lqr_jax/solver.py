@@ -18,12 +18,12 @@ def solve(
     q: jnp.ndarray,
     r: jnp.ndarray,
     c: jnp.ndarray,
-    δ: float,
+    Δ: jnp.ndarray,
 ):
     """
     Solves the following regularized LQR problem:
         [P   C.T] [x] = -[s],
-        [C  -δ I] [y]    [c]
+        [C   -Δ ] [y]    [c]
     where
         P = diag(P_0, ..., P_N),
         P_i = |-> [Q_i   M_i] if 0 <= i < N
@@ -36,7 +36,7 @@ def solve(
             [                               (...)                ]
             [                               A_{N-1}  B_{N-1}  -I ]
     and s = [q[0], r[0], ..., q[N-1], r[N-1], q[N]]
-    and k > 0.
+    and Δ = diag(δ_0, ..., δ_N), with δ_0, ..., δ_N > 0.
 
     Shapes (where n, m are the state and control dimensions):
         A: [N, n, n],
@@ -47,21 +47,27 @@ def solve(
         q: [N+1, n],
         r: [N, m],
         c: [N+1, n],
+        Δ: [N+1],
 
     Returns:
         X: [N+1, n],
         U: [N, m],
-        y: [N+1, n],
-        respectively the states, controls, and co-states.
+        Y: [N+1, n],
+        V: [N+1, n, n],
+        v: [N+1, n],
+        K: [N, m, n],
+        k: [N, m],
+        respectively the states, controls, co-states, quadratic values (V, v),
+        optimal control law (K, k).
     """
     N, n, m = B.shape
 
-    def reg_lqr_step(V, v, F_inv, Q, M, R, A, B, q, r, c):
+    def reg_lqr_step(V, v, F_inv, Q, M, R, A, B, q, r, c, δ, δ_next):
         """Performs a single step of the regularized LQR backward pass."""
         I_n = jnp.eye(n)
         W = F_inv @ V
         G = symmetrize(B.T @ W @ B + R)
-        g = v + W @ (c - δ * v)
+        g = v + W @ (c - δ_next * v)
         H = B.T @ W @ A + M.T
         h = r + B.T @ g
         K_k = solve_symmetric_positive_definite_system(
@@ -80,7 +86,7 @@ def solve(
         i = elem
 
         K, k, V, v, F_inv = reg_lqr_step(
-            V, v, F_inv, Q[i], M[i], R[i], A[i], B[i], q[i], r[i], c[i + 1]
+            V, v, F_inv, Q[i], M[i], R[i], A[i], B[i], q[i], r[i], c[i + 1], Δ[i], Δ[i + 1]
         )
 
         new_carry = (V, v, F_inv)
@@ -91,7 +97,7 @@ def solve(
     V_N = Q[N]
     v_N = q[N]
     I_n = jnp.eye(n)
-    F_inv_N = jnp.linalg.inv(I_n + δ * V_N)
+    F_inv_N = jnp.linalg.inv(I_n + Δ[N] * V_N)
 
     K, k, V, v, F_inv = jax.lax.scan(
         f, (V_N, v_N, F_inv_N), jnp.arange(N), N, reverse=True
@@ -101,7 +107,7 @@ def solve(
     v = jnp.concatenate([v, v_N.reshape([1, n])])
     F_inv = jnp.concatenate([F_inv, F_inv_N.reshape([1, n, n])])
 
-    def rollout(K, k, x0, A, B, c, F_inv, v, δ):
+    def rollout(K, k, x0, A, B, c, F_inv, v, Δ):
         """
         Performs the regularized LQR forward pass.
         """
@@ -113,7 +119,7 @@ def solve(
 
             x = carry
             u = K[t] @ x + k[t]
-            f = δ * v[t + 1] - c[t + 1]
+            f = Δ[t + 1] * v[t + 1] - c[t + 1]
             next_x = F_inv[t + 1] @ (A[t] @ x + B[t] @ u - f)
 
             new_carry = next_x
@@ -125,10 +131,10 @@ def solve(
 
         return (jnp.concatenate([x0.reshape([1, n]), X]), U)
 
-    f_0 = δ * v[0] - c[0]
+    f_0 = Δ[0] * v[0] - c[0]
     x0 = -F_inv[0] @ f_0
 
-    X, U = rollout(K=K, k=k, x0=x0, A=A, B=B, c=c, F_inv=F_inv, v=v, δ=δ)
+    X, U = rollout(K=K, k=k, x0=x0, A=A, B=B, c=c, F_inv=F_inv, v=v, Δ=Δ)
 
     Y = jax.vmap(lambda i: V[i] @ X[i] + v[i])(jnp.arange(N + 1))
 
@@ -145,7 +151,7 @@ def solve_parallel(
     q: jnp.ndarray,
     r: jnp.ndarray,
     c: jnp.ndarray,
-    δ: float,
+    Δ: jnp.ndarray,
 ):
     """
     This is a O(log(N) * (log(n) + log(n) parallel time complexity implementation of `solve`.
@@ -213,7 +219,7 @@ def solve_parallel(
             # The C matrices.
             jnp.concatenate(
                 [
-                    jax.vmap(lambda t: δ * jnp.eye(n) + BRinv[t] @ B[t].T)(jnp.arange(T)),
+                    jax.vmap(lambda t: Δ[t + 1] * jnp.eye(n) + BRinv[t] @ B[t].T)(jnp.arange(T)),
                     jnp.zeros([1, n, n]),
                 ]
             ),
@@ -242,8 +248,8 @@ def solve_parallel(
     P = result[:, -n:, :]
     p = result[:, 2 * n + 1, :]
 
-    F = jax.vmap(lambda i: jnp.eye(n) + δ * P[i])(jnp.arange(T + 1))
-    f = jax.vmap(lambda i: δ * p[i] - c[i])(jnp.arange(T + 1))
+    F = jax.vmap(lambda i: jnp.eye(n) + Δ[i] * P[i])(jnp.arange(T + 1))
+    f = jax.vmap(lambda i: Δ[i] * p[i] - c[i])(jnp.arange(T + 1))
 
     def getKs(t):
         symmetrize = lambda x: 0.5 * (x + x.T)
@@ -253,7 +259,7 @@ def solve_parallel(
         BtW = B[t].T @ W
         BtWA = BtW @ A[t]
 
-        g = p[t + 1] + W @ (c[t + 1] - δ * p[t + 1])
+        g = p[t + 1] + W @ (c[t + 1] - Δ[t + 1] * p[t + 1])
 
         H = BtWA + M[t].T
         h = r[t] + B[t].T @ g
@@ -268,7 +274,7 @@ def solve_parallel(
 
     K, k = jax.vmap(getKs)(jnp.arange(T))
 
-    def rollout_parallel(K, k, A, B, c, F, f, δ):
+    def rollout_parallel(K, k, A, B, c, F, f, Δ):
         """Rolls-out time-varying linear policy u[t] = K[t] x[t] + k[t]."""
         T, _, n = K.shape
 
@@ -310,7 +316,7 @@ def solve_parallel(
 
         return X, U
 
-    X, U = rollout_parallel(K=K, k=k, A=A, B=B, c=c, F=F, f=f, δ=δ)
+    X, U = rollout_parallel(K=K, k=k, A=A, B=B, c=c, F=F, f=f, Δ=Δ)
 
     Y = jax.vmap(lambda i: P[i] @ X[i] + p[i])(jnp.arange(T + 1))
 
