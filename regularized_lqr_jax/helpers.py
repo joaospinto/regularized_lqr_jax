@@ -49,7 +49,7 @@ def regularize(Q, R, M, psd_delta):
     Args:
       Q:             [T+1, n, n]      numpy array.
       R:             [T, m, m]        numpy array.
-      M:             [T+1, n, m]      numpy array.
+      M:             [T, n, m]        numpy array.
       psd_delta:     the minimum eigenvalue post PSD cone projection.
 
     Returns:
