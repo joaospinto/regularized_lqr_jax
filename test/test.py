@@ -3,7 +3,14 @@ import unittest
 import jax
 from jax import numpy as jnp
 
-from regularized_lqr_jax.helpers import compute_residual, symmetrize, regularize
+from functools import partial
+
+from regularized_lqr_jax.helpers import (
+    compute_residual,
+    project_psd_cone,
+    symmetrize,
+    regularize,
+)
 from regularized_lqr_jax.solver import solve, solve_parallel
 
 jax.config.update("jax_enable_x64", True)
@@ -48,7 +55,8 @@ class TestRegularizedLQR(unittest.TestCase):
         self.r = jax.random.uniform(subkey, (T, m))
 
         key, subkey = jax.random.split(key)
-        self.Δ = jnp.abs(jax.random.uniform(subkey, (n,)))
+        self.Δ = jnp.abs(jax.random.uniform(subkey, (T + 1, n, n)))
+        self.Δ = jax.vmap(partial(project_psd_cone, delta=1e-3))(self.Δ)
 
     def test(self):
         for use_parallel_method in [False, True]:
