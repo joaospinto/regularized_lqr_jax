@@ -63,9 +63,9 @@ def regularize(Q, R, M, psd_delta):
     R = psd(R)
 
     # This is done to ensure that the Q - M R^(-1) M^T are positive semi-definite.
-    Rinv = jax.vmap(lambda t: jnp.linalg.inv(R[t]))(jnp.arange(T))
-    MRinvMT = jax.vmap(lambda t: M[t] @ Rinv[t] @ M[t].T)(jnp.arange(T))
-    QMRinvMT = jax.vmap(lambda t: Q[t] - MRinvMT[t])(jnp.arange(T))
+    Rinv = jax.vmap(lambda R: jnp.linalg.inv(R))(R)
+    MRinvMT = jax.vmap(lambda M, Rinv: M @ Rinv @ M.T)(M, Rinv)
+    QMRinvMT = jax.vmap(lambda Q, MRinvMT: Q - MRinvMT)(Q[:-1], MRinvMT)
     QMRinvMT = psd(QMRinvMT)
     Q_T = Q[T].reshape([1, n, n])
     Q_T = psd(Q_T)
@@ -94,19 +94,19 @@ def compute_residual(
     return jnp.concatenate(
         [
             jax.vmap(
-                lambda i: Q[i] @ X[i] + M[i] @ U[i] - Y[i] + A[i].T @ Y[i + 1] + q[i]
-            )(jnp.arange(T)).flatten(),
-            jax.vmap(lambda i: M[i].T @ X[i] + R[i] @ U[i] + B[i].T @ Y[i + 1] + r[i])(
-                jnp.arange(T)
-            ).flatten(),
+                lambda Q, X, M, U, Y, A, Y_next, q: Q @ X + M @ U - Y + A.T @ Y_next + q
+            )(Q[:-1], X[:-1], M, U, Y[:-1], A, Y[1:], q[:-1]).flatten(),
+            jax.vmap(
+                lambda M, X, R, U, B, Y_next, r: M.T @ X + R @ U + B.T @ Y_next + r
+            )(M, X[:-1], R, U, B, Y[1:], r).flatten(),
             (Q[T] @ X[T] - Y[T] + q[T]),
             (-X[0] - Δ[0] @ Y[0] + c[0]),
             jax.vmap(
-                lambda i: A[i] @ X[i]
-                + B[i] @ U[i]
-                - X[i + 1]
-                + c[i + 1]
-                - Δ[i + 1] @ Y[i + 1]
-            )(jnp.arange(T)).flatten(),
+                lambda A, X, B, U, X_next, c_next, Δ_next, Y_next: A @ X
+                + B @ U
+                - X_next
+                + c_next
+                - Δ_next @ Y_next
+            )(A, X[:-1], B, U, X[1:], c[1:], Δ[1:], Y[1:]).flatten(),
         ]
     )

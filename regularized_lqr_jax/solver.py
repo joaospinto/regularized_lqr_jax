@@ -80,25 +80,25 @@ def solve(
         F_inv = jnp.linalg.inv(I_n + Δ @ V)
         return K, k, V, v, F_inv
 
-    def f(carry, elem):
+    def reg_lqr_step_wrapper(carry, elem):
         """Wraps reg_lqr_step for jax.lax.scan."""
         V, v, F_inv = carry
-        i = elem
+        Q, M, R, A, B, q, r, c, Δ, Δ_next = elem
 
         K, k, V, v, F_inv = reg_lqr_step(
             V,
             v,
             F_inv,
-            Q[i],
-            M[i],
-            R[i],
-            A[i],
-            B[i],
-            q[i],
-            r[i],
-            c[i + 1],
-            Δ[i],
-            Δ[i + 1],
+            Q,
+            M,
+            R,
+            A,
+            B,
+            q,
+            r,
+            c,
+            Δ,
+            Δ_next,
         )
 
         new_carry = (V, v, F_inv)
@@ -112,7 +112,11 @@ def solve(
     F_inv_N = jnp.linalg.inv(I_n + Δ[N] @ V_N)
 
     K, k, V, v, F_inv = jax.lax.scan(
-        f, (V_N, v_N, F_inv_N), jnp.arange(N), N, reverse=True
+        reg_lqr_step_wrapper,
+        (V_N, v_N, F_inv_N),
+        (Q[:-1], M, R, A, B, q[:-1], r, c[1:], Δ[:-1], Δ[1:]),
+        N,
+        reverse=True,
     )[1]
 
     V = jnp.concatenate([V, V_N.reshape([1, n, n])])
@@ -127,19 +131,19 @@ def solve(
         T, n, m = B.shape
 
         def f(carry, elem):
-            t = elem
+            K, k, Δ, v, c, F_inv, A, B = elem
 
             x = carry
-            u = K[t] @ x + k[t]
-            f = Δ[t + 1] @ v[t + 1] - c[t + 1]
-            next_x = F_inv[t + 1] @ (A[t] @ x + B[t] @ u - f)
+            u = K @ x + k
+            f = Δ @ v - c
+            next_x = F_inv @ (A @ x + B @ u - f)
 
             new_carry = next_x
             new_output = (next_x, u)
 
             return new_carry, new_output
 
-        (X, U) = jax.lax.scan(f, x0, jnp.arange(T), T)[1]
+        (X, U) = jax.lax.scan(f, x0, (K, k, Δ[1:], v[1:], c[1:], F_inv[1:], A, B), T)[1]
 
         return (jnp.concatenate([x0.reshape([1, n]), X]), U)
 
@@ -148,7 +152,7 @@ def solve(
 
     X, U = rollout(K=K, k=k, x0=x0, A=A, B=B, c=c, F_inv=F_inv, v=v, Δ=Δ)
 
-    Y = jax.vmap(lambda i: V[i] @ X[i] + v[i])(jnp.arange(N + 1))
+    Y = jax.vmap(lambda V, X, v: V @ X + v)(V, X, v)
 
     return X, U, Y, V, v, K, k
 
@@ -171,18 +175,9 @@ def solve_parallel(
     T = Q.shape[0] - 1
     n = Q.shape[1]
 
-    def fn(next, prev):
-        def decompose(elem):
-            return (
-                elem[:n],
-                elem[n],
-                elem[n + 1 : 2 * n + 1],
-                elem[2 * n + 1],
-                elem[-n:],
-            )
-
-        A_l, c_l, C_l, p_l, P_l = decompose(prev)
-        A_r, c_r, C_r, p_r, P_r = decompose(next)
+    def value_combination(next, prev):
+        A_l, c_l, C_l, p_l, P_l = prev
+        A_r, c_r, C_r, p_r, P_r = next
 
         ArIClPr_inv = A_r @ jnp.linalg.inv(jnp.eye(n) + C_l @ P_r)
         AlTIPrCl_inv = A_l.T @ jnp.linalg.inv(jnp.eye(n) + P_r @ C_l)
@@ -193,95 +188,81 @@ def solve_parallel(
         p_new = AlTIPrCl_inv @ (p_r + P_r @ c_l) + p_l
         P_new = AlTIPrCl_inv @ P_r @ A_l + P_l
 
-        return jnp.concatenate(
-            [
-                A_new,
-                c_new.reshape(1, n),
-                C_new,
-                p_new.reshape(1, n),
-                P_new,
-            ]
-        )
+        return (A_new, c_new, C_new, p_new, P_new)
 
-    def chol_inv(t):
-        m = R[t].shape[0]
-        return solve_symmetric_positive_definite_system(R[t], jnp.eye(m))
+    def chol_inv(R):
+        m = R.shape[0]
+        return solve_symmetric_positive_definite_system(R, jnp.eye(m))
 
-    Rinv = jax.vmap(chol_inv)(jnp.arange(T))
-    BRinv = jax.vmap(lambda t: B[t] @ Rinv[t])(jnp.arange(T))
-    MRinv = jax.vmap(lambda t: M[t] @ Rinv[t])(jnp.arange(T))
+    Rinv = jax.vmap(chol_inv)(R)
+    BRinv = jax.vmap(lambda B, Rinv: B @ Rinv)(B, Rinv)
+    MRinv = jax.vmap(lambda M, Rinv: M @ Rinv)(M, Rinv)
 
-    elems = jnp.concatenate(
+    # The A matrices.
+    A_mod = jnp.concatenate(
         [
-            # The A matrices.
-            jnp.concatenate(
-                [
-                    A - jax.vmap(lambda t: BRinv[t] @ M[t].T)(jnp.arange(T)),
-                    jnp.zeros([1, n, n]),
-                ]
-            ),
-            # The c vectors (b, in the notation of https://ieeexplore.ieee.org/document/9697418).
-            jnp.concatenate(
-                [
-                    (
-                        jax.vmap(lambda t: c[t + 1] - BRinv[t] @ r[t])(jnp.arange(T))
-                    ).reshape([T, 1, n]),
-                    jnp.zeros([1, 1, n]),
-                ]
-            ),
-            # The C matrices.
-            jnp.concatenate(
-                [
-                    jax.vmap(lambda t: Δ[t + 1] + BRinv[t] @ B[t].T)(jnp.arange(T)),
-                    jnp.zeros([1, n, n]),
-                ]
-            ),
-            # The p vectors (-eta, in the notation of https://ieeexplore.ieee.org/document/9697418).
-            q.reshape([T + 1, 1, n])
-            - jnp.concatenate(
-                [
-                    jax.vmap(lambda t: MRinv[t] @ r[t])(jnp.arange(T)).reshape(
-                        [T, 1, n]
-                    ),
-                    jnp.zeros([1, 1, n]),
-                ]
-            ),
-            # The P matrices (J, in the notation of https://ieeexplore.ieee.org/document/9697418).
-            Q
-            - jnp.concatenate(
-                [
-                    jax.vmap(lambda t: MRinv[t] @ M[t].T)(jnp.arange(T)),
-                    jnp.zeros([1, n, n]),
-                ]
-            ),
-        ],
-        axis=1,
+            A - jax.vmap(lambda BRinv, M: BRinv @ M.T)(BRinv, M),
+            jnp.zeros([1, n, n]),
+        ]
     )
 
-    result = jax.lax.associative_scan(
-        lambda r, l: jax.vmap(fn)(r, l), elems, reverse=True
+    # The c vectors (b, in the notation of https://ieeexplore.ieee.org/document/9697418).
+    c_mod = jnp.concatenate(
+        [
+            (jax.vmap(lambda c, BRinv, r: c - BRinv @ r)(c[1:], BRinv, r)).reshape(
+                [T, n]
+            ),
+            jnp.zeros([1, n]),
+        ]
     )
 
-    P = result[:, -n:, :]
-    p = result[:, 2 * n + 1, :]
+    # The C matrices.
+    C_mod = jnp.concatenate(
+        [
+            jax.vmap(lambda Δ, BRinv, B: Δ + BRinv @ B.T)(Δ[1:], BRinv, B),
+            jnp.zeros([1, n, n]),
+        ]
+    )
 
-    F = jax.vmap(lambda i: jnp.eye(n) + Δ[i] @ P[i])(jnp.arange(T + 1))
-    f = jax.vmap(lambda i: Δ[i] @ p[i] - c[i])(jnp.arange(T + 1))
+    # The p vectors (-eta, in the notation of https://ieeexplore.ieee.org/document/9697418).
+    q_mod = q.reshape([T + 1, n]) - jnp.concatenate(
+        [
+            jax.vmap(lambda MRinv, r: MRinv @ r)(MRinv, r).reshape([T, n]),
+            jnp.zeros([1, n]),
+        ]
+    )
 
-    def getKs(t):
-        F_inv = jnp.linalg.inv(F[t + 1])
+    # The P matrices (J, in the notation of https://ieeexplore.ieee.org/document/9697418).
+    Q_mod = Q - jnp.concatenate(
+        [
+            jax.vmap(lambda MRinv, M: MRinv @ M.T)(MRinv, M),
+            jnp.zeros([1, n, n]),
+        ]
+    )
 
-        W = P[t + 1] @ F_inv
+    _, _, _, p, P = jax.lax.associative_scan(
+        jax.vmap(value_combination),
+        (A_mod, c_mod, C_mod, q_mod, Q_mod),
+        reverse=True,
+    )
 
-        BtW = B[t].T @ W
-        BtWA = BtW @ A[t]
+    F = jax.vmap(lambda Δ, P: jnp.eye(n) + Δ @ P)(Δ, P)
+    f = jax.vmap(lambda Δ, p, c: Δ @ p - c)(Δ, p, c)
 
-        g = p[t + 1] + W @ (c[t + 1] - Δ[t + 1] @ p[t + 1])
+    def getKs(F, f, P, p, A, B, c, Δ, M, R, r):
+        F_inv = jnp.linalg.inv(F)
 
-        H = BtWA + M[t].T
-        h = r[t] + B[t].T @ g
+        W = symmetrize(P @ F_inv)
 
-        G = symmetrize(R[t] + BtW @ B[t])
+        BtW = B.T @ W
+        BtWA = BtW @ A
+
+        g = p - W @ f
+
+        H = BtWA + M.T
+        h = r + B.T @ g
+
+        G = symmetrize(R + BtW @ B)
 
         K_k = solve_symmetric_positive_definite_system(
             G, -jnp.hstack((H, h.reshape([-1, 1])))
@@ -291,53 +272,54 @@ def solve_parallel(
 
         return K, k
 
-    K, k = jax.vmap(getKs)(jnp.arange(T))
+    K, k = jax.vmap(getKs)(F[1:], f[1:], P[1:], p[1:], A, B, c[1:], Δ[1:], M, R, r)
 
     def rollout_parallel(K, k, A, B, c, F, f):
         """Rolls-out time-varying linear policy u[t] = K[t] x[t] + k[t]."""
         T, _, n = K.shape
 
-        def fn(prev, next):
-            _F = prev[:-1]
-            _f = prev[-1]
-            _G = next[:-1]
-            _g = next[-1]
-            return jnp.concatenate([_G @ _F, (_g + _G @ _f).reshape([1, n])])
+        def affine_fn_combiner(prev, next):
+            _F, _f = prev
+            _G, _g = next
+            return (_G @ _F, _g + _G @ _f)
 
         # x_0 = -F_0^{-1} f_0
         x0 = jnp.linalg.solve(F[0], -f[0])
 
-        def get_elem(t):
+        def get_forward_dynamics(F, f, K, k, A, B):
             # x_{i+1} = F_{i+1}^{-1} (A_i x_i + B_i u_i - f_{i+1})
             # u_i = K_i x_i + k_i
             # x_{i+1} = F_{i+1}^{-1} ((A_i + B_i K_i) x_i + B_i k_i - f_{i+1})
             F_inv_ApBK = jnp.linalg.solve(
-                F[t + 1],
-                A[t] + B[t] @ K[t],
+                F,
+                A + B @ K,
             )
             F_inv_Bkmf = jnp.linalg.solve(
-                F[t + 1],
-                B[t] @ k[t] - f[t + 1],
+                F,
+                B @ k - f,
             )
-            return jnp.concatenate([F_inv_ApBK, F_inv_Bkmf.reshape([1, n])])
+            return (F_inv_ApBK, F_inv_Bkmf)
 
-        elems = jax.vmap(get_elem)(jnp.arange(T))
-        comp = jax.lax.associative_scan(lambda l, r: jax.vmap(fn)(l, r), elems)
+        forward_dynamics = jax.vmap(get_forward_dynamics)(F[1:], f[1:], K, k, A, B)
+        composed_dynamics = jax.lax.associative_scan(
+            jax.vmap(affine_fn_combiner), forward_dynamics
+        )
         X = jnp.concatenate(
             [
                 x0.reshape(1, n),
-                jax.vmap(lambda t: comp[t, :-1, :] @ x0 + comp[t, -1, :])(
-                    jnp.arange(T)
+                jax.vmap(lambda A, b: A @ x0 + b)(
+                    composed_dynamics[0],
+                    composed_dynamics[1],
                 ),
             ]
         )
 
-        U = jax.vmap(lambda t: K[t] @ X[t] + k[t])(jnp.arange(T))
+        U = jax.vmap(lambda K, X, k: K @ X + k)(K, X[:-1], k)
 
         return X, U
 
     X, U = rollout_parallel(K=K, k=k, A=A, B=B, c=c, F=F, f=f)
 
-    Y = jax.vmap(lambda i: P[i] @ X[i] + p[i])(jnp.arange(T + 1))
+    Y = jax.vmap(lambda P, X, p: P @ X + p)(P, X, p)
 
     return X, U, Y, P, p, K, k
