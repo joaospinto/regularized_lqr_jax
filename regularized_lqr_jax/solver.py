@@ -7,19 +7,90 @@ from regularized_lqr_jax.helpers import (
     symmetrize,
 )
 
+from regularized_lqr_jax.types import (
+    FactorizationInputs,
+    SequentialFactorizationOutputs,
+    ParallelFactorizationOutputs,
+    SolveInputs,
+    SolveOutputs,
+)
+
+
+@jax.jit
+def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
+    """
+    Factors the block-matrix
+        [P   C.T],
+        [C   -Δ ]
+    where
+        P = diag(P_0, ..., P_N),
+        P_i = |-> [Q_i   M_i] if 0 <= i < N
+              |   [M_i.T R_i]
+              |-> Q_i         if i = N
+    and C = [ -I                                                 ]
+            [A_1  B_1  -I                                        ]
+            [         A_2  B_2  -I                               ]
+            [                  A_3  B_3  -I                      ]
+            [                               (...)                ]
+            [                               A_{N-1}  B_{N-1}  -I ]
+    and Δ = block_diag(Δ_0, ..., Δ_N).
+    """
+    A = inputs.A
+    B = inputs.B
+    Q = inputs.Q
+    M = inputs.M
+    R = inputs.R
+    Δ = inputs.Δ
+
+    N, n, m = B.shape
+
+    def reg_lqr_step(carry, elem):
+        """Performs a single partial step of the regularized LQR backward pass."""
+        W_next = carry
+        Q, M, R, A, B, Δ = elem
+
+        I_n = jnp.eye(n)
+        G = symmetrize(B.T @ W_next @ B + R)
+        H = B.T @ W_next @ A + M.T
+        K = solve_symmetric_positive_definite_system(G, -H)
+        V = symmetrize(A.T @ W_next @ A + Q + K.T @ H)
+        F_inv = jnp.linalg.inv(I_n + Δ @ V)
+        W = V @ F_inv
+
+        new_carry = W
+        new_output = (W, G, K, V, F_inv)
+
+        return new_carry, new_output
+
+    V_N = Q[N]
+    I_n = jnp.eye(n)
+    F_inv_N = jnp.linalg.inv(I_n + Δ[N] @ V_N)
+    W_N = V_N @ F_inv_N
+
+    W, G, K, V, F_inv = jax.lax.scan(
+        reg_lqr_step,
+        W_N,
+        (Q[:-1], M, R, A, B, Δ[:-1]),
+        N,
+        reverse=True,
+    )[1]
+
+    W = jnp.concatenate([W, W_N.reshape([1, n, n])])
+    V = jnp.concatenate([V, V_N.reshape([1, n, n])])
+    F_inv = jnp.concatenate([F_inv, F_inv_N.reshape([1, n, n])])
+    G_inv = jax.vmap(lambda G: solve_symmetric_positive_definite_system(G, jnp.eye(m)))(
+        G
+    )
+
+    return SequentialFactorizationOutputs(V, K, W, G_inv, F_inv)
+
 
 @jax.jit
 def solve(
-    A: jax.Array,
-    B: jax.Array,
-    Q: jax.Array,
-    M: jax.Array,
-    R: jax.Array,
-    q: jax.Array,
-    r: jax.Array,
-    c: jax.Array,
-    Δ: jax.Array,
-):
+    factorization_inputs: FactorizationInputs,
+    factorization_outputs: SequentialFactorizationOutputs,
+    solve_inputs: SolveInputs,
+) -> SolveOutputs:
     """
     Solves the following regularized LQR problem:
         [P   C.T] [x] = -[s],
@@ -37,289 +108,254 @@ def solve(
             [                               A_{N-1}  B_{N-1}  -I ]
     and s = [q[0], r[0], ..., q[N-1], r[N-1], q[N]]
     and Δ = block_diag(Δ_0, ..., Δ_N).
-
-    Shapes (where n, m are the state and control dimensions):
-        A: [N, n, n],
-        B: [N, n, m],
-        Q: [N+1, n, n],
-        M: [N, n, m],
-        R: [N, m, m],
-        q: [N+1, n],
-        r: [N, m],
-        c: [N+1, n],
-        Δ: [N+1, n, n],
-
-    Returns:
-        X: [N+1, n],
-        U: [N, m],
-        Y: [N+1, n],
-        V: [N+1, n, n],
-        v: [N+1, n],
-        K: [N, m, n],
-        k: [N, m],
-        respectively the states, controls, co-states, quadratic values (V, v),
-        optimal control law (K, k).
     """
+    A = factorization_inputs.A
+    B = factorization_inputs.B
+    Δ = factorization_inputs.Δ
+
+    V = factorization_outputs.V
+    K = factorization_outputs.K
+    W = factorization_outputs.W
+    G_inv = factorization_outputs.G_inv
+    F_inv = factorization_outputs.F_inv
+
+    q = solve_inputs.q
+    r = solve_inputs.r
+    c = solve_inputs.c
+
     N, n, m = B.shape
 
-    def reg_lqr_step(V, v, F_inv, Q, M, R, A, B, q, r, c, Δ, Δ_next):
-        """Performs a single step of the regularized LQR backward pass."""
-        I_n = jnp.eye(n)
-        W = V @ F_inv
-        G = symmetrize(B.T @ W @ B + R)
-        g = v + W @ (c - Δ_next @ v)
-        H = B.T @ W @ A + M.T
+    def reg_lqr_step(carry, elem):
+        """Performs a single partial step of the regularized LQR backward pass."""
+        v_next = carry
+        A, B, q, r, c_next, Δ_next, W_next, G_inv, K = elem
+
+        g = v_next + W_next @ (c_next - Δ_next @ v_next)
         h = r + B.T @ g
-        K_k = solve_symmetric_positive_definite_system(
-            G, -jnp.hstack((H, h.reshape([-1, 1])))
-        )
-        K = K_k[:, :-1]
-        k = K_k[:, -1]
-        V = symmetrize(A.T @ W @ A + Q + K.T @ H)
+        k = -G_inv @ h
         v = q + A.T @ g + K.T @ h
-        F_inv = jnp.linalg.inv(I_n + Δ @ V)
-        return K, k, V, v, F_inv
 
-    def reg_lqr_step_wrapper(carry, elem):
-        """Wraps reg_lqr_step for jax.lax.scan."""
-        V, v, F_inv = carry
-        Q, M, R, A, B, q, r, c, Δ, Δ_next = elem
-
-        K, k, V, v, F_inv = reg_lqr_step(
-            V,
-            v,
-            F_inv,
-            Q,
-            M,
-            R,
-            A,
-            B,
-            q,
-            r,
-            c,
-            Δ,
-            Δ_next,
-        )
-
-        new_carry = (V, v, F_inv)
-        new_output = (K, k, V, v, F_inv)
+        new_carry = v
+        new_output = (k, v)
 
         return new_carry, new_output
 
-    V_N = Q[N]
     v_N = q[N]
-    I_n = jnp.eye(n)
-    F_inv_N = jnp.linalg.inv(I_n + Δ[N] @ V_N)
-
-    K, k, V, v, F_inv = jax.lax.scan(
-        reg_lqr_step_wrapper,
-        (V_N, v_N, F_inv_N),
-        (Q[:-1], M, R, A, B, q[:-1], r, c[1:], Δ[:-1], Δ[1:]),
+    k, v = jax.lax.scan(
+        reg_lqr_step,
+        v_N,
+        (A, B, q[:-1], r, c[1:], Δ[1:], W[1:], G_inv, K),
         N,
         reverse=True,
     )[1]
-
-    V = jnp.concatenate([V, V_N.reshape([1, n, n])])
     v = jnp.concatenate([v, v_N.reshape([1, n])])
-    F_inv = jnp.concatenate([F_inv, F_inv_N.reshape([1, n, n])])
-
-    def rollout(K, k, x0, A, B, c, F_inv, v, Δ):
-        """
-        Performs the regularized LQR forward pass.
-        """
-
-        T, n, m = B.shape
-
-        def f(carry, elem):
-            K, k, Δ, v, c, F_inv, A, B = elem
-
-            x = carry
-            u = K @ x + k
-            f = Δ @ v - c
-            next_x = F_inv @ (A @ x + B @ u - f)
-
-            new_carry = next_x
-            new_output = (next_x, u)
-
-            return new_carry, new_output
-
-        (X, U) = jax.lax.scan(f, x0, (K, k, Δ[1:], v[1:], c[1:], F_inv[1:], A, B), T)[1]
-
-        return (jnp.concatenate([x0.reshape([1, n]), X]), U)
-
     f_0 = Δ[0] @ v[0] - c[0]
     x0 = -F_inv[0] @ f_0
 
-    X, U = rollout(K=K, k=k, x0=x0, A=A, B=B, c=c, F_inv=F_inv, v=v, Δ=Δ)
+    def forward_dynamics(carry, elem):
+        K, k, Δ, v, c, F_inv, A, B = elem
+
+        x = carry
+        u = K @ x + k
+        f = Δ @ v - c
+        next_x = F_inv @ (A @ x + B @ u - f)
+
+        new_carry = next_x
+        new_output = (next_x, u)
+
+        return new_carry, new_output
+
+    X, U = jax.lax.scan(
+        forward_dynamics, x0, (K, k, Δ[1:], v[1:], c[1:], F_inv[1:], A, B), N
+    )[1]
+
+    X = jnp.concatenate([x0.reshape([1, n]), X])
 
     Y = jax.vmap(lambda V, X, v: V @ X + v)(V, X, v)
 
-    return X, U, Y, V, v, K, k
+    return SolveOutputs(X, U, Y, v, k)
 
 
 @jax.jit
-def solve_parallel(
-    A: jax.Array,
-    B: jax.Array,
-    Q: jax.Array,
-    M: jax.Array,
-    R: jax.Array,
-    q: jax.Array,
-    r: jax.Array,
-    c: jax.Array,
-    Δ: jax.Array,
-):
+def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs:
     """
-    This is a O(log(N) * (log(n) + log(n) parallel time complexity implementation of `solve`.
+    This is a O(log(N) * (log^2(n) + log^2(n)) parallel time complexity implementation of `factor`.
     """
-    T = Q.shape[0] - 1
-    n = Q.shape[1]
+    A = inputs.A
+    B = inputs.B
+    Q = inputs.Q
+    M = inputs.M
+    R = inputs.R
+    Δ = inputs.Δ
 
-    def value_combination(next, prev):
-        A_l, c_l, C_l, p_l, P_l = prev
-        A_r, c_r, C_r, p_r, P_r = next
-
-        ArIClPr_inv = A_r @ jnp.linalg.inv(jnp.eye(n) + C_l @ P_r)
-        AlTIPrCl_inv = A_l.T @ jnp.linalg.inv(jnp.eye(n) + P_r @ C_l)
-
-        A_new = ArIClPr_inv @ A_l
-        c_new = ArIClPr_inv @ (c_l - C_l @ p_r) + c_r
-        C_new = ArIClPr_inv @ C_l @ A_r.T + C_r
-        p_new = AlTIPrCl_inv @ (p_r + P_r @ c_l) + p_l
-        P_new = AlTIPrCl_inv @ P_r @ A_l + P_l
-
-        return (A_new, c_new, C_new, p_new, P_new)
+    N, n, m = B.shape
 
     def chol_inv(R):
         m = R.shape[0]
         return solve_symmetric_positive_definite_system(R, jnp.eye(m))
 
-    Rinv = jax.vmap(chol_inv)(R)
-    BRinv = jax.vmap(lambda B, Rinv: B @ Rinv)(B, Rinv)
-    MRinv = jax.vmap(lambda M, Rinv: M @ Rinv)(M, Rinv)
+    R_inv = jax.vmap(chol_inv)(R)
+    BR_inv = jax.vmap(lambda B, R_inv: B @ R_inv)(B, R_inv)
+    MR_inv = jax.vmap(lambda M, R_inv: M @ R_inv)(M, R_inv)
 
     # The A matrices.
     A_mod = jnp.concatenate(
         [
-            A - jax.vmap(lambda BRinv, M: BRinv @ M.T)(BRinv, M),
+            A - jax.vmap(lambda BR_inv, M: BR_inv @ M.T)(BR_inv, M),
             jnp.zeros([1, n, n]),
-        ]
-    )
-
-    # The c vectors (b, in the notation of https://ieeexplore.ieee.org/document/9697418).
-    c_mod = jnp.concatenate(
-        [
-            (jax.vmap(lambda c, BRinv, r: c - BRinv @ r)(c[1:], BRinv, r)).reshape(
-                [T, n]
-            ),
-            jnp.zeros([1, n]),
         ]
     )
 
     # The C matrices.
     C_mod = jnp.concatenate(
         [
-            jax.vmap(lambda Δ, BRinv, B: Δ + BRinv @ B.T)(Δ[1:], BRinv, B),
+            jax.vmap(lambda Δ, BR_inv, B: Δ + BR_inv @ B.T)(Δ[1:], BR_inv, B),
             jnp.zeros([1, n, n]),
-        ]
-    )
-
-    # The p vectors (-eta, in the notation of https://ieeexplore.ieee.org/document/9697418).
-    q_mod = q.reshape([T + 1, n]) - jnp.concatenate(
-        [
-            jax.vmap(lambda MRinv, r: MRinv @ r)(MRinv, r).reshape([T, n]),
-            jnp.zeros([1, n]),
         ]
     )
 
     # The P matrices (J, in the notation of https://ieeexplore.ieee.org/document/9697418).
     Q_mod = Q - jnp.concatenate(
         [
-            jax.vmap(lambda MRinv, M: MRinv @ M.T)(MRinv, M),
+            jax.vmap(lambda MR_inv, M: MR_inv @ M.T)(MR_inv, M),
             jnp.zeros([1, n, n]),
         ]
     )
 
-    _, _, _, p, P = jax.lax.associative_scan(
+    def value_combination(next, prev):
+        A_l, C_l, P_l = prev
+        A_r, C_r, P_r = next
+
+        ArIClPr_inv = A_r @ jnp.linalg.inv(jnp.eye(n) + C_l @ P_r)
+        AlTIPrCl_inv = A_l.T @ jnp.linalg.inv(jnp.eye(n) + P_r @ C_l)
+
+        A_new = ArIClPr_inv @ A_l
+        C_new = ArIClPr_inv @ C_l @ A_r.T + C_r
+        P_new = AlTIPrCl_inv @ P_r @ A_l + P_l
+
+        return (A_new, C_new, P_new)
+
+    _, _, P = jax.lax.associative_scan(
         jax.vmap(value_combination),
-        (A_mod, c_mod, C_mod, q_mod, Q_mod),
+        (A_mod, C_mod, Q_mod),
         reverse=True,
     )
 
     F = jax.vmap(lambda Δ, P: jnp.eye(n) + Δ @ P)(Δ, P)
-    f = jax.vmap(lambda Δ, p, c: Δ @ p - c)(Δ, p, c)
+    F_inv = jax.vmap(jnp.linalg.inv)(F)
+    W = jax.vmap(lambda P, F_inv: symmetrize(P @ F_inv))(P, F_inv)
 
-    def getKs(F, f, P, p, A, B, c, Δ, M, R, r):
-        F_inv = jnp.linalg.inv(F)
-
-        W = symmetrize(P @ F_inv)
-
+    def get_Ks_and_Gs(W, P, A, B, Δ, M, R):
         BtW = B.T @ W
         BtWA = BtW @ A
-
-        g = p - W @ f
-
         H = BtWA + M.T
-        h = r + B.T @ g
-
         G = symmetrize(R + BtW @ B)
+        K = solve_symmetric_positive_definite_system(G, -H)
+        return K, G
 
-        K_k = solve_symmetric_positive_definite_system(
-            G, -jnp.hstack((H, h.reshape([-1, 1])))
-        )
-        K = K_k[:, :-1]
-        k = K_k[:, -1]
+    K, G = jax.vmap(get_Ks_and_Gs)(W[1:], P[1:], A, B, Δ[1:], M, R)
 
-        return K, k
+    G_inv = jax.vmap(lambda G: solve_symmetric_positive_definite_system(G, jnp.eye(m)))(
+        G
+    )
 
-    K, k = jax.vmap(getKs)(F[1:], f[1:], P[1:], p[1:], A, B, c[1:], Δ[1:], M, R, r)
+    # x_{i+1} = F_{i+1}^{-1} (A_i x_i + B_i u_i - f_{i+1})
+    # u_i = K_i x_i + k_i
+    # x_{i+1} = F_{i+1}^{-1} ((A_i + B_i K_i) x_i + B_i k_i - f_{i+1})
+    ApBK = jax.vmap(lambda K, A, B: (A + B @ K))(K, A, B)
+    F_inv_ApBK = jax.vmap(lambda F_inv, ApBK: F_inv @ ApBK)(F_inv[1:], ApBK)
 
-    def rollout_parallel(K, k, A, B, c, F, f):
-        """Rolls-out time-varying linear policy u[t] = K[t] x[t] + k[t]."""
-        T, _, n = K.shape
+    return ParallelFactorizationOutputs(P, K, W, G_inv, F_inv, ApBK, F_inv_ApBK)
 
-        def affine_fn_combiner(prev, next):
-            _F, _f = prev
-            _G, _g = next
-            return (_G @ _F, _g + _G @ _f)
 
-        # x_0 = -F_0^{-1} f_0
-        x0 = jnp.linalg.solve(F[0], -f[0])
+@jax.jit
+def solve_parallel(
+    factorization_inputs: FactorizationInputs,
+    factorization_outputs: ParallelFactorizationOutputs,
+    solve_inputs: SolveInputs,
+) -> SolveOutputs:
+    """
+    This is a O(log(N) * (log(n) + log(n)) parallel time complexity implementation of `solve`.
+    """
+    B = factorization_inputs.B
+    Δ = factorization_inputs.Δ
 
-        def get_forward_dynamics(F, f, K, k, A, B):
-            # x_{i+1} = F_{i+1}^{-1} (A_i x_i + B_i u_i - f_{i+1})
-            # u_i = K_i x_i + k_i
-            # x_{i+1} = F_{i+1}^{-1} ((A_i + B_i K_i) x_i + B_i k_i - f_{i+1})
-            F_inv_ApBK = jnp.linalg.solve(
-                F,
-                A + B @ K,
-            )
-            F_inv_Bkmf = jnp.linalg.solve(
-                F,
-                B @ k - f,
-            )
-            return (F_inv_ApBK, F_inv_Bkmf)
+    P = factorization_outputs.P
+    K = factorization_outputs.K
+    W = factorization_outputs.W
+    G_inv = factorization_outputs.G_inv
+    F_inv = factorization_outputs.F_inv
+    ApBK = factorization_outputs.ApBK
+    F_inv_ApBK = factorization_outputs.F_inv_ApBK
 
-        forward_dynamics = jax.vmap(get_forward_dynamics)(F[1:], f[1:], K, k, A, B)
-        composed_dynamics = jax.lax.associative_scan(
-            jax.vmap(affine_fn_combiner), forward_dynamics
-        )
-        X = jnp.concatenate(
-            [
-                x0.reshape(1, n),
-                jax.vmap(lambda A, b: A @ x0 + b)(
-                    composed_dynamics[0],
-                    composed_dynamics[1],
-                ),
-            ]
-        )
+    q = solve_inputs.q
+    r = solve_inputs.r
+    c = solve_inputs.c
 
-        U = jax.vmap(lambda K, X, k: K @ X + k)(K, X[:-1], k)
+    N, n, m = B.shape
 
-        return X, U
+    # Recover p via the affine recurrence
+    # p_i = Z_i p_{i+1} + z_i, where
+    # Z_i = (F_{i+1}^{-1} (A_i + B_i K_i))^T and
+    # z_i = q_i + K_i^T r_i + (A_i + B_i K_i)^T (W_{i+1} c_{i+1}).
+    Z = F_inv_ApBK.mT
+    z = jax.vmap(lambda q, r, c, ApBK, W, K: q + K.T @ r + ApBK.T @ (W @ c))(
+        q[:-1], r, c[1:], ApBK, W[1:], K
+    )
 
-    X, U = rollout_parallel(K=K, k=k, A=A, B=B, c=c, F=F, f=f)
+    def reverse_affine_combine(next, prev):
+        F_r, f_r = next
+        F_l, f_l = prev
+        return F_l @ F_r, F_l @ f_r + f_l
+
+    Z_scan, z_scan = jax.lax.associative_scan(
+        jax.vmap(reverse_affine_combine), (Z, z), reverse=True
+    )
+    p_N = q[N]
+    p = jax.vmap(lambda Z, z: Z @ p_N + z)(Z_scan, z_scan)
+    p = jnp.concatenate([p, p_N.reshape([1, n])])
+
+    f = jax.vmap(lambda Δ, p, c: Δ @ p - c)(Δ, p, c)
+
+    def get_k(B, r, W, G_inv, f, p):
+        g = p - W @ f
+        h = r + B.T @ g
+        k = -G_inv @ h
+        return k
+
+    k = jax.vmap(get_k)(B, r, W[1:], G_inv, f[1:], p[1:])
+
+    # x_0 = -F_0^{-1} f_0
+    x0 = -F_inv[0] @ f[0]
+
+    # x_{i+1} = F_{i+1}^{-1} (A_i x_i + B_i u_i - f_{i+1})
+    # u_i = K_i x_i + k_i
+    # x_{i+1} = F_{i+1}^{-1} ((A_i + B_i K_i) x_i + B_i k_i - f_{i+1})
+    F_inv_Bkmf = jax.vmap(lambda F_inv, B, k, f: F_inv @ (B @ k - f))(
+        F_inv[1:], B, k, f[1:]
+    )
+
+    def forward_affine_fn_combiner(prev, next):
+        F_l, f_l = prev
+        F_r, f_r = next
+        return (F_r @ F_l, f_r + F_r @ f_l)
+
+    composed_dynamics = jax.lax.associative_scan(
+        jax.vmap(forward_affine_fn_combiner), (F_inv_ApBK, F_inv_Bkmf)
+    )
+
+    X = jnp.concatenate(
+        [
+            x0.reshape(1, n),
+            jax.vmap(lambda A, b: A @ x0 + b)(
+                composed_dynamics[0],
+                composed_dynamics[1],
+            ),
+        ]
+    )
+
+    U = jax.vmap(lambda K, X, k: K @ X + k)(K, X[:-1], k)
 
     Y = jax.vmap(lambda P, X, p: P @ X + p)(P, X, p)
 
-    return X, U, Y, P, p, K, k
+    return SolveOutputs(X, U, Y, p, k)

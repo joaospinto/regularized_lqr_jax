@@ -11,7 +11,11 @@ from regularized_lqr_jax.helpers import (
     symmetrize,
     regularize,
 )
-from regularized_lqr_jax.solver import solve, solve_parallel
+from regularized_lqr_jax.solver import factor, factor_parallel, solve, solve_parallel
+from regularized_lqr_jax.types import (
+    FactorizationInputs,
+    SolveInputs,
+)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -61,37 +65,40 @@ class TestRegularizedLQR(unittest.TestCase):
     def test(self):
         for use_parallel_method in [False, True]:
             with self.subTest(use_parallel_method=use_parallel_method):
-                method = solve_parallel if use_parallel_method else solve
+                factor_method = factor_parallel if use_parallel_method else factor
+                solve_method = solve_parallel if use_parallel_method else solve
 
-                X, U, Y, P, p, K, k = method(
-                    A=self.A,
-                    B=self.B,
-                    Q=self.Q,
-                    M=self.M,
-                    R=self.R,
-                    q=self.q,
-                    r=self.r,
-                    c=self.c,
-                    Δ=self.Δ,
+                factorization_inputs = FactorizationInputs(
+                    self.A,
+                    self.B,
+                    self.Q,
+                    self.M,
+                    self.R,
+                    self.Δ,
+                )
+
+                factorization_outputs = factor_method(factorization_inputs)
+
+                solve_inputs = SolveInputs(
+                    self.q,
+                    self.r,
+                    self.c,
+                )
+
+                solve_outputs = solve_method(
+                    factorization_inputs,
+                    factorization_outputs,
+                    solve_inputs,
                 )
 
                 residual = compute_residual(
-                    A=self.A,
-                    B=self.B,
-                    Q=self.Q,
-                    M=self.M,
-                    R=self.R,
-                    q=self.q,
-                    r=self.r,
-                    c=self.c,
-                    X=X,
-                    U=U,
-                    Y=Y,
-                    Δ=self.Δ,
+                    factorization_inputs,
+                    solve_inputs,
+                    solve_outputs,
                 )
 
                 if use_parallel_method:
-                    self.assertLess(jnp.linalg.norm(residual), 1e-3)
+                    self.assertLess(jnp.linalg.norm(residual), 1e-6)
                 else:
                     self.assertLess(jnp.linalg.norm(residual), 1e-9)
 

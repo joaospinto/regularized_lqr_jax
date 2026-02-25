@@ -5,6 +5,12 @@ from functools import partial
 from jax import numpy as jnp
 from jax import scipy as jsp
 
+from regularized_lqr_jax.types import (
+    FactorizationInputs,
+    SolveInputs,
+    SolveOutputs,
+)
+
 
 @jax.jit
 def _2x2_inv(M):
@@ -76,19 +82,26 @@ def regularize(Q, R, M, psd_delta):
 
 @jax.jit
 def compute_residual(
-    A: jax.Array,
-    B: jax.Array,
-    Q: jax.Array,
-    M: jax.Array,
-    R: jax.Array,
-    q: jax.Array,
-    r: jax.Array,
-    c: jax.Array,
-    X: jax.Array,
-    U: jax.Array,
-    Y: jax.Array,
-    Δ: jax.Array,
+    factorization_inputs: FactorizationInputs,
+    solve_inputs: SolveInputs,
+    solve_outputs: SolveOutputs,
 ):
+    """Compute the residual of the regularized LQR system."""
+    A = factorization_inputs.A
+    B = factorization_inputs.B
+    Q = factorization_inputs.Q
+    M = factorization_inputs.M
+    R = factorization_inputs.R
+    Δ = factorization_inputs.Δ
+
+    q = solve_inputs.q
+    r = solve_inputs.r
+    c = solve_inputs.c
+
+    X = solve_outputs.X
+    U = solve_outputs.U
+    Y = solve_outputs.Y
+
     T = A.shape[0]
 
     return jnp.concatenate(
