@@ -76,18 +76,18 @@ def regularize(Q, R, M, psd_delta):
 
 @jax.jit
 def compute_residual(
-    A: jnp.ndarray,
-    B: jnp.ndarray,
-    Q: jnp.ndarray,
-    M: jnp.ndarray,
-    R: jnp.ndarray,
-    q: jnp.ndarray,
-    r: jnp.ndarray,
-    c: jnp.ndarray,
-    X: jnp.ndarray,
-    U: jnp.ndarray,
-    Y: jnp.ndarray,
-    Δ: jnp.ndarray,
+    A: jax.Array,
+    B: jax.Array,
+    Q: jax.Array,
+    M: jax.Array,
+    R: jax.Array,
+    q: jax.Array,
+    r: jax.Array,
+    c: jax.Array,
+    X: jax.Array,
+    U: jax.Array,
+    Y: jax.Array,
+    Δ: jax.Array,
 ):
     T = A.shape[0]
 

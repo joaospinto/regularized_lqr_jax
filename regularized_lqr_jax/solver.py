@@ -10,15 +10,15 @@ from regularized_lqr_jax.helpers import (
 
 @jax.jit
 def solve(
-    A: jnp.ndarray,
-    B: jnp.ndarray,
-    Q: jnp.ndarray,
-    M: jnp.ndarray,
-    R: jnp.ndarray,
-    q: jnp.ndarray,
-    r: jnp.ndarray,
-    c: jnp.ndarray,
-    Δ: jnp.ndarray,
+    A: jax.Array,
+    B: jax.Array,
+    Q: jax.Array,
+    M: jax.Array,
+    R: jax.Array,
+    q: jax.Array,
+    r: jax.Array,
+    c: jax.Array,
+    Δ: jax.Array,
 ):
     """
     Solves the following regularized LQR problem:
@@ -159,15 +159,15 @@ def solve(
 
 @jax.jit
 def solve_parallel(
-    A: jnp.ndarray,
-    B: jnp.ndarray,
-    Q: jnp.ndarray,
-    M: jnp.ndarray,
-    R: jnp.ndarray,
-    q: jnp.ndarray,
-    r: jnp.ndarray,
-    c: jnp.ndarray,
-    Δ: jnp.ndarray,
+    A: jax.Array,
+    B: jax.Array,
+    Q: jax.Array,
+    M: jax.Array,
+    R: jax.Array,
+    q: jax.Array,
+    r: jax.Array,
+    c: jax.Array,
+    Δ: jax.Array,
 ):
     """
     This is a O(log(N) * (log(n) + log(n) parallel time complexity implementation of `solve`.
