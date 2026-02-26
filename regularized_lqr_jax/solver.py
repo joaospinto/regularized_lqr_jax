@@ -310,13 +310,13 @@ def solve_parallel(
         q[:-1], r, c[1:], ApBK, W[1:], K
     )
 
-    def reverse_affine_combine(next, prev):
-        F_r, f_r = next
-        F_l, f_l = prev
-        return F_l @ F_r, F_l @ f_r + f_l
+    def affine_fn_composer(_Ff, _Gg):
+        _F, _f = _Ff
+        _G, _g = _Gg
+        return _G @ _F, _G @ _f + _g
 
     Z_scan, z_scan = jax.lax.associative_scan(
-        jax.vmap(reverse_affine_combine), (Z, z), reverse=True
+        jax.vmap(affine_fn_composer), (Z, z), reverse=True
     )
     p_N = q[N]
     p = jax.vmap(lambda Z, z: Z @ p_N + z)(Z_scan, z_scan)
@@ -342,13 +342,8 @@ def solve_parallel(
         F_inv[1:], B, k, f[1:]
     )
 
-    def forward_affine_fn_combiner(prev, next):
-        F_l, f_l = prev
-        F_r, f_r = next
-        return (F_r @ F_l, f_r + F_r @ f_l)
-
     composed_dynamics = jax.lax.associative_scan(
-        jax.vmap(forward_affine_fn_combiner), (F_inv_ApBK, F_inv_Bkmf)
+        jax.vmap(affine_fn_composer), (F_inv_ApBK, F_inv_Bkmf)
     )
 
     X = jnp.concatenate(
