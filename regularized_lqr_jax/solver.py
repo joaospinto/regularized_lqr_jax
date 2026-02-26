@@ -190,13 +190,19 @@ def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs
 
     N, n, m = B.shape
 
-    def chol_inv(R):
-        m = R.shape[0]
-        return solve_symmetric_positive_definite_system(R, jnp.eye(m))
-
-    R_inv = jax.vmap(chol_inv)(R)
-    BR_inv = jax.vmap(lambda B, R_inv: B @ R_inv)(B, R_inv)
-    MR_inv = jax.vmap(lambda M, R_inv: M @ R_inv)(M, R_inv)
+    BR_inv_and_MR_inv = jax.vmap(
+        lambda R, B, M: solve_symmetric_positive_definite_system(
+            R, jnp.column_stack([B.mT, M.mT])
+        )
+    )(R, B, M).mT
+    BR_inv = BR_inv_and_MR_inv[
+        :,
+        :n,
+    ]
+    MR_inv = BR_inv_and_MR_inv[
+        :,
+        n:,
+    ]
 
     # The A matrices.
     A_mod = jnp.concatenate(
@@ -226,8 +232,8 @@ def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs
         A_l, C_l, P_l = prev
         A_r, C_r, P_r = next
 
-        ArIClPr_inv = A_r @ jnp.linalg.inv(jnp.eye(n) + C_l @ P_r)
-        AlTIPrCl_inv = A_l.T @ jnp.linalg.inv(jnp.eye(n) + P_r @ C_l)
+        ArIClPr_inv = jnp.linalg.solve(jnp.eye(n) + P_r.mT @ C_l.mT, A_r.mT).mT
+        AlTIPrCl_inv = jnp.linalg.solve(jnp.eye(n) + C_l.mT @ P_r.mT, A_l).T
 
         A_new = ArIClPr_inv @ A_l
         C_new = ArIClPr_inv @ C_l @ A_r.T + C_r
