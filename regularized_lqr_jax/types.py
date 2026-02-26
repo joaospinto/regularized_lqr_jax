@@ -29,14 +29,14 @@ class FactorizationInputs:
 class SequentialFactorizationOutputs:
     """
     Shapes (where n, m are the state and control dimensions):
-        V: [N+1, n, n],
+        P: [N+1, n, n],
         K: [N, m, n],
         W: [N+1, n, n],
         G_inv: [N, m, m],
         F_inv: [N+1, n, n],
     """
 
-    V: jax.Array
+    P: jax.Array
     K: jax.Array
     W: jax.Array
     G_inv: jax.Array
@@ -89,12 +89,12 @@ class SolveOutputs:
         X: [N+1, n],
         U: [N, m],
         Y: [N+1, n],
-        v: [N+1, n],
+        p: [N+1, n],
         k: [N, m],
     """
 
     X: jax.Array
     U: jax.Array
     Y: jax.Array
-    v: jax.Array
+    p: jax.Array
     k: jax.Array

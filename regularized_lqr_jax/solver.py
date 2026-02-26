@@ -53,12 +53,12 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
         G = symmetrize(B.T @ W_next @ B + R)
         H = B.T @ W_next @ A + M.T
         K = solve_symmetric_positive_definite_system(G, -H)
-        V = symmetrize(A.T @ W_next @ A + Q + K.T @ H)
-        F_inv = jnp.linalg.inv(I_n + Δ @ V)
-        W = V @ F_inv
+        P = symmetrize(A.T @ W_next @ A + Q + K.T @ H)
+        F_inv = jnp.linalg.inv(I_n + Δ @ P)
+        W = P @ F_inv
 
         new_carry = W
-        new_output = (W, G, K, V, F_inv)
+        new_output = (W, G, K, P, F_inv)
 
         return new_carry, new_output
 
@@ -67,7 +67,7 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
     F_inv_N = jnp.linalg.inv(I_n + Δ[N] @ V_N)
     W_N = V_N @ F_inv_N
 
-    W, G, K, V, F_inv = jax.lax.scan(
+    W, G, K, P, F_inv = jax.lax.scan(
         reg_lqr_step,
         W_N,
         (Q[:-1], M, R, A, B, Δ[:-1]),
@@ -76,13 +76,13 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
     )[1]
 
     W = jnp.concatenate([W, W_N.reshape([1, n, n])])
-    V = jnp.concatenate([V, V_N.reshape([1, n, n])])
+    P = jnp.concatenate([P, V_N.reshape([1, n, n])])
     F_inv = jnp.concatenate([F_inv, F_inv_N.reshape([1, n, n])])
     G_inv = jax.vmap(lambda G: solve_symmetric_positive_definite_system(G, jnp.eye(m)))(
         G
     )
 
-    return SequentialFactorizationOutputs(V, K, W, G_inv, F_inv)
+    return SequentialFactorizationOutputs(P, K, W, G_inv, F_inv)
 
 
 @jax.jit
@@ -113,7 +113,7 @@ def solve(
     B = factorization_inputs.B
     Δ = factorization_inputs.Δ
 
-    V = factorization_outputs.V
+    P = factorization_outputs.P
     K = factorization_outputs.K
     W = factorization_outputs.W
     G_inv = factorization_outputs.G_inv
@@ -127,37 +127,37 @@ def solve(
 
     def reg_lqr_step(carry, elem):
         """Performs a single partial step of the regularized LQR backward pass."""
-        v_next = carry
+        p_next = carry
         A, B, q, r, c_next, Δ_next, W_next, G_inv, K = elem
 
-        g = v_next + W_next @ (c_next - Δ_next @ v_next)
+        g = p_next + W_next @ (c_next - Δ_next @ p_next)
         h = r + B.T @ g
         k = -G_inv @ h
-        v = q + A.T @ g + K.T @ h
+        p = q + A.T @ g + K.T @ h
 
-        new_carry = v
-        new_output = (k, v)
+        new_carry = p
+        new_output = (k, p)
 
         return new_carry, new_output
 
-    v_N = q[N]
-    k, v = jax.lax.scan(
+    p_N = q[N]
+    k, p = jax.lax.scan(
         reg_lqr_step,
-        v_N,
+        p_N,
         (A, B, q[:-1], r, c[1:], Δ[1:], W[1:], G_inv, K),
         N,
         reverse=True,
     )[1]
-    v = jnp.concatenate([v, v_N.reshape([1, n])])
-    f_0 = Δ[0] @ v[0] - c[0]
+    p = jnp.concatenate([p, p_N.reshape([1, n])])
+    f_0 = Δ[0] @ p[0] - c[0]
     x0 = -F_inv[0] @ f_0
 
     def forward_dynamics(carry, elem):
-        K, k, Δ, v, c, F_inv, A, B = elem
+        K, k, Δ, p, c, F_inv, A, B = elem
 
         x = carry
         u = K @ x + k
-        f = Δ @ v - c
+        f = Δ @ p - c
         next_x = F_inv @ (A @ x + B @ u - f)
 
         new_carry = next_x
@@ -166,14 +166,14 @@ def solve(
         return new_carry, new_output
 
     X, U = jax.lax.scan(
-        forward_dynamics, x0, (K, k, Δ[1:], v[1:], c[1:], F_inv[1:], A, B), N
+        forward_dynamics, x0, (K, k, Δ[1:], p[1:], c[1:], F_inv[1:], A, B), N
     )[1]
 
     X = jnp.concatenate([x0.reshape([1, n]), X])
 
-    Y = jax.vmap(lambda V, X, v: V @ X + v)(V, X, v)
+    Y = jax.vmap(lambda P, X, p: P @ X + p)(P, X, p)
 
-    return SolveOutputs(X, U, Y, v, k)
+    return SolveOutputs(X, U, Y, p, k)
 
 
 @jax.jit
