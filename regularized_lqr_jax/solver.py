@@ -130,18 +130,19 @@ def solve(
         p_next = carry
         A, B, q, r, c_next, Δ_next, W_next, G_inv, K = elem
 
-        g = p_next + W_next @ (c_next - Δ_next @ p_next)
-        h = r + B.T @ g
+        f_next = Δ_next @ p_next - c_next
+        g_next = p_next - W_next @ f_next
+        h = r + B.T @ g_next
         k = -G_inv @ h
-        p = q + A.T @ g + K.T @ h
+        p = q + A.T @ g_next + K.T @ h
 
         new_carry = p
-        new_output = (k, p)
+        new_output = (f_next, k, p)
 
         return new_carry, new_output
 
     p_N = q[N]
-    k, p = jax.lax.scan(
+    f, k, p = jax.lax.scan(
         reg_lqr_step,
         p_N,
         (A, B, q[:-1], r, c[1:], Δ[1:], W[1:], G_inv, K),
@@ -150,14 +151,14 @@ def solve(
     )[1]
     p = jnp.concatenate([p, p_N.reshape([1, n])])
     f_0 = Δ[0] @ p[0] - c[0]
+    f = jnp.concatenate([f_0.reshape([1, n]), f])
     x0 = -F_inv[0] @ f_0
 
     def forward_dynamics(carry, elem):
-        K, k, Δ, p, c, F_inv, A, B = elem
+        K, k, Δ, p, c, f, F_inv, A, B = elem
 
         x = carry
         u = K @ x + k
-        f = Δ @ p - c
         next_x = F_inv @ (A @ x + B @ u - f)
 
         new_carry = next_x
@@ -166,7 +167,7 @@ def solve(
         return new_carry, new_output
 
     X, U = jax.lax.scan(
-        forward_dynamics, x0, (K, k, Δ[1:], p[1:], c[1:], F_inv[1:], A, B), N
+        forward_dynamics, x0, (K, k, Δ[1:], p[1:], c[1:], f[1:], F_inv[1:], A, B), N
     )[1]
 
     X = jnp.concatenate([x0.reshape([1, n]), X])
