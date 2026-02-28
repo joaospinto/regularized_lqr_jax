@@ -7,7 +7,7 @@ dependencies = [
   "jax",
 ]
 authors = [
-  {name = "Joao Sousa-Pinto", email = "joaospinto@gmail.com"},
+  {name = "<redacted>", email = "<redacted>"},
 ]
 description = "Implements the regularized LQR algorithm in JAX."
 license = "MIT"
