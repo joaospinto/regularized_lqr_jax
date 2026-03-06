@@ -40,6 +40,39 @@ def symmetrize(x):
 
 
 @jax.jit
+def stable_F_solve(S_cho, L, b):
+    """
+    Solves F x = b,
+    where F = I + Δ P, Δ = L L.T,
+    and S_cho is the Cholesky factor of (I + L.T P L),
+    using the similarity transformation
+    (I + L L.T P) = L (I + L.T P L) L^-1,
+    resulting in
+    x = L (I + L.T P L)^-1 L^-1 b.
+    """
+    # y = L^-1 b
+    y = jsp.linalg.solve_triangular(L, b, lower=True)
+    # z = S^-1 y
+    z = jsp.linalg.cho_solve((S_cho, False), y)
+    # x = L z
+    return L @ z
+
+
+@jax.jit
+def stable_compute_W(S_cho, L, PL):
+    """
+    Computes W = P (I + L L.T P)^-1 = P L (I + L.T P L)^-1 L^-1
+    where S_cho is the Cholesky factor of (I + L.T P L) and PL = P @ L.
+    """
+    # V = (P L) S^-1
+    # Solve S V.T = (P L).T
+    VT = jsp.linalg.cho_solve((S_cho, False), PL.T)
+    # W = V L^-1 => W L = V => L.T W.T = V.T => L.T W = V.T
+    W = jsp.linalg.solve_triangular(L, VT, lower=True, trans="T").T
+    return symmetrize(W)
+
+
+@jax.jit
 def project_psd_cone(Q, delta=0.0):
     """Projects Q into the positive semi-definite matrix cone."""
     S, V = jnp.linalg.eigh(symmetrize(Q))
