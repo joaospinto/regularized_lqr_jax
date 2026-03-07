@@ -92,7 +92,6 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
     return SequentialFactorizationOutputs(P, K, W, G_cho, L, S_cho)
 
 
-
 @jax.jit
 def solve(
     factorization_inputs: FactorizationInputs,

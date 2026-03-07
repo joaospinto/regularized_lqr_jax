@@ -80,8 +80,13 @@ def regularize(Q, R, M, psd_delta):
     R = psd(R)
 
     # This is done to ensure that the Q - M R^(-1) M^T are positive semi-definite.
-    Rinv = jax.vmap(lambda R: jnp.linalg.inv(R))(R)
-    MRinvMT = jax.vmap(lambda M, Rinv: M @ Rinv @ M.T)(M, Rinv)
+    # M R^-1 M^T = (L^-1 M^T)^T (L^-1 M^T) where R = L L^T.
+    L = jax.vmap(lambda R: jnp.linalg.cholesky(R))(R)
+    LinvMT = jax.vmap(lambda L, M: jsp.linalg.solve_triangular(L, M.T, lower=True))(
+        L, M
+    )
+    MRinvMT = jax.vmap(lambda LinvMT: LinvMT.T @ LinvMT)(LinvMT)
+
     QMRinvMT = jax.vmap(lambda Q, MRinvMT: Q - MRinvMT)(Q[:-1], MRinvMT)
     QMRinvMT = psd(QMRinvMT)
     Q_T = Q[T].reshape([1, n, n])
