@@ -3,7 +3,6 @@ from jax import numpy as jnp
 
 
 from regularized_lqr_jax.helpers import (
-    solve_symmetric_positive_definite_system,
     symmetrize,
     stable_F_solve,
     stable_compute_W,
@@ -205,19 +204,13 @@ def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs
 
     N, n, m = B.shape
 
-    BR_inv_and_MR_inv = jax.vmap(
-        lambda R, B, M: solve_symmetric_positive_definite_system(
-            R, jnp.column_stack([B.mT, M.mT])
-        )
-    )(R, B, M).mT
-    BR_inv = BR_inv_and_MR_inv[
-        :,
-        :n,
-    ]
-    MR_inv = BR_inv_and_MR_inv[
-        :,
-        n:,
-    ]
+    R_cho = jax.vmap(lambda R: jax.scipy.linalg.cho_factor(R, lower=True)[0])(R)
+    BR_inv = jax.vmap(
+        lambda R_cho, B: jax.scipy.linalg.cho_solve((R_cho, True), B.T).T
+    )(R_cho, B)
+    MR_inv = jax.vmap(
+        lambda R_cho, M: jax.scipy.linalg.cho_solve((R_cho, True), M.T).T
+    )(R_cho, M)
 
     # The A matrices.
     A_mod = jnp.concatenate(

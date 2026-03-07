@@ -13,28 +13,6 @@ from regularized_lqr_jax.types import (
 
 
 @jax.jit
-def _2x2_inv(M):
-    # See https://en.wikipedia.org/wiki/Adjugate_matrix.
-    a, b, c, d = M.flatten()
-    det = a * d - b * c
-    return (1.0 / det) * jnp.array([[d, -b], [-c, a]])
-
-
-@jax.jit
-def _solve_cholesky(A, b):
-    f = jsp.linalg.cho_factor(A)
-    return jsp.linalg.cho_solve(f, b)
-
-
-@jax.jit
-def solve_symmetric_positive_definite_system(A, b):
-    n, _ = A.shape
-    if n == 2:
-        return _2x2_inv(A) @ b
-    return _solve_cholesky(A, b)
-
-
-@jax.jit
 def symmetrize(x):
     return 0.5 * (x + x.T)
 

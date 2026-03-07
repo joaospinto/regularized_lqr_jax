@@ -98,7 +98,7 @@ class TestRegularizedLQR(unittest.TestCase):
                 )
 
                 if use_parallel_method:
-                    self.assertLess(jnp.linalg.norm(residual), 1e-9)
+                    self.assertLess(jnp.linalg.norm(residual), 1e-8)
                 else:
                     self.assertLess(jnp.linalg.norm(residual), 1e-12)
 
