@@ -55,8 +55,9 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
 
         I_n = jnp.eye(n)
         G = symmetrize(B.T @ W_next @ B + R)
+        G_cho = jax.scipy.linalg.cho_factor(G, lower=False)[0]
         H = B.T @ W_next @ A + M.T
-        K = solve_symmetric_positive_definite_system(G, -H)
+        K = -jax.scipy.linalg.cho_solve((G_cho, False), H)
         P = symmetrize(A.T @ W_next @ A + Q + K.T @ H)
 
         PL = P @ L
@@ -65,7 +66,7 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
         W = stable_compute_W(S_cho, L, PL)
 
         new_carry = W
-        new_output = (W, G, K, P, S_cho)
+        new_output = (W, G_cho, K, P, S_cho)
 
         return new_carry, new_output
 
@@ -77,7 +78,7 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
     S_cho_N = jax.scipy.linalg.cho_factor(S_N, lower=False)[0]
     W_N = stable_compute_W(S_cho_N, L_N, PL_N)
 
-    W, G, K, P, S_cho = jax.lax.scan(
+    W, G_cho, K, P, S_cho = jax.lax.scan(
         reg_lqr_step,
         W_N,
         (Q[:-1], M, R, A, B, L[:-1]),
@@ -88,11 +89,9 @@ def factor(inputs: FactorizationInputs) -> SequentialFactorizationOutputs:
     W = jnp.concatenate([W, W_N.reshape([1, n, n])])
     P = jnp.concatenate([P, V_N.reshape([1, n, n])])
     S_cho = jnp.concatenate([S_cho, S_cho_N.reshape([1, n, n])])
-    G_inv = jax.vmap(lambda G: solve_symmetric_positive_definite_system(G, jnp.eye(m)))(
-        G
-    )
 
-    return SequentialFactorizationOutputs(P, K, W, G_inv, L, S_cho)
+    return SequentialFactorizationOutputs(P, K, W, G_cho, L, S_cho)
+
 
 
 @jax.jit
@@ -126,7 +125,7 @@ def solve(
     P = factorization_outputs.P
     K = factorization_outputs.K
     W = factorization_outputs.W
-    G_inv = factorization_outputs.G_inv
+    G_cho = factorization_outputs.G_cho
     L = factorization_outputs.L
     S_cho = factorization_outputs.S_cho
 
@@ -139,12 +138,12 @@ def solve(
     def reg_lqr_step(carry, elem):
         """Performs a single partial step of the regularized LQR backward pass."""
         p_next = carry
-        A, B, q, r, c_next, Δ_next, W_next, G_inv, K = elem
+        A, B, q, r, c_next, Δ_next, W_next, G_cho, K = elem
 
         f_next = Δ_next @ p_next - c_next
         g_next = p_next - W_next @ f_next
         h = r + B.T @ g_next
-        k = -G_inv @ h
+        k = -jax.scipy.linalg.cho_solve((G_cho, False), h)
         p = q + A.T @ g_next + K.T @ h
 
         new_carry = p
@@ -156,7 +155,7 @@ def solve(
     f, k, p = jax.lax.scan(
         reg_lqr_step,
         p_N,
-        (A, B, q[:-1], r, c[1:], Δ[1:], W[1:], G_inv, K),
+        (A, B, q[:-1], r, c[1:], Δ[1:], W[1:], G_cho, K),
         N,
         reverse=True,
     )[1]
@@ -269,19 +268,16 @@ def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs
     S_cho = jax.vmap(lambda S: jax.scipy.linalg.cho_factor(S, lower=False)[0])(S)
     W = jax.vmap(stable_compute_W)(S_cho, L, PL)
 
-    def get_Ks_and_Gs(W, P, A, B, Δ, M, R):
+    def get_Ks_and_Gchos(W, P, A, B, Δ, M, R):
         BtW = B.T @ W
         BtWA = BtW @ A
         H = BtWA + M.T
         G = symmetrize(R + BtW @ B)
-        K = solve_symmetric_positive_definite_system(G, -H)
-        return K, G
+        G_cho = jax.scipy.linalg.cho_factor(G, lower=False)[0]
+        K = -jax.scipy.linalg.cho_solve((G_cho, False), H)
+        return K, G_cho
 
-    K, G = jax.vmap(get_Ks_and_Gs)(W[1:], P[1:], A, B, Δ[1:], M, R)
-
-    G_inv = jax.vmap(lambda G: solve_symmetric_positive_definite_system(G, jnp.eye(m)))(
-        G
-    )
+    K, G_cho = jax.vmap(get_Ks_and_Gchos)(W[1:], P[1:], A, B, Δ[1:], M, R)
 
     # x_{i+1} = F_{i+1}^{-1} (A_i x_i + B_i u_i - f_{i+1})
     # u_i = K_i x_i + k_i
@@ -289,7 +285,7 @@ def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs
     ApBK = jax.vmap(lambda K, A, B: (A + B @ K))(K, A, B)
     F_inv_ApBK = jax.vmap(stable_F_solve)(S_cho[1:], L[1:], ApBK)
 
-    return ParallelFactorizationOutputs(P, K, W, G_inv, L, S_cho, ApBK, F_inv_ApBK)
+    return ParallelFactorizationOutputs(P, K, W, G_cho, L, S_cho, ApBK, F_inv_ApBK)
 
 
 @jax.jit
@@ -307,7 +303,7 @@ def solve_parallel(
     P = factorization_outputs.P
     K = factorization_outputs.K
     W = factorization_outputs.W
-    G_inv = factorization_outputs.G_inv
+    G_cho = factorization_outputs.G_cho
     L = factorization_outputs.L
     S_cho = factorization_outputs.S_cho
     ApBK = factorization_outputs.ApBK
@@ -342,13 +338,13 @@ def solve_parallel(
 
     f = jax.vmap(lambda Δ, p, c: Δ @ p - c)(Δ, p, c)
 
-    def get_k(B, r, W, G_inv, f, p):
+    def get_k(B, r, W, G_cho, f, p):
         g = p - W @ f
         h = r + B.T @ g
-        k = -G_inv @ h
+        k = -jax.scipy.linalg.cho_solve((G_cho, False), h)
         return k
 
-    k = jax.vmap(get_k)(B, r, W[1:], G_inv, f[1:], p[1:])
+    k = jax.vmap(get_k)(B, r, W[1:], G_cho, f[1:], p[1:])
 
     # x_0 = -F_0^{-1} f_0
     x0 = -stable_F_solve(S_cho[0], L[0], f[0])
