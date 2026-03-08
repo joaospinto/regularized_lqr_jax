@@ -18,36 +18,24 @@ def symmetrize(x):
 
 
 @jax.jit
-def stable_F_solve(S_cho, L, b):
+def stable_F_solve(F_lu, F_piv, b):
     """
     Solves F x = b,
-    where F = I + Δ P, Δ = L L.T,
-    and S_cho is the Cholesky factor of (I + L.T P L),
-    using the similarity transformation
-    (I + L L.T P) = L (I + L.T P L) L^-1,
-    resulting in
-    x = L (I + L.T P L)^-1 L^-1 b.
+    where F = I + Δ P,
+    and (F_lu, F_piv) is the LU factorization of F.
     """
-    # y = L^-1 b
-    y = jsp.linalg.solve_triangular(L, b, lower=True)
-    # z = S^-1 y
-    z = jsp.linalg.cho_solve((S_cho, False), y)
-    # x = L z
-    return L @ z
+    return jsp.linalg.lu_solve((F_lu, F_piv), b)
 
 
 @jax.jit
-def stable_compute_W(S_cho, L, PL):
+def stable_compute_W(F_lu, F_piv, P):
     """
-    Computes W = P (I + L L.T P)^-1 = P L (I + L.T P L)^-1 L^-1
-    where S_cho is the Cholesky factor of (I + L.T P L) and PL = P @ L.
+    Computes W = P (I + Δ P)^-1
+    where (F_lu, F_piv) is the LU factorization of F = I + Δ P.
     """
-    # V = (P L) S^-1
-    # Solve S V.T = (P L).T
-    VT = jsp.linalg.cho_solve((S_cho, False), PL.T)
-    # W = V L^-1 => W L = V => L.T W.T = V.T => L.T W = V.T
-    W = jsp.linalg.solve_triangular(L, VT, lower=True, trans="T").T
-    return symmetrize(W)
+    # W = P F^-1 => F.T W.T = P.T
+    WT = jsp.linalg.lu_solve((F_lu, F_piv), P.T, trans=1)
+    return symmetrize(WT.T)
 
 
 @jax.jit

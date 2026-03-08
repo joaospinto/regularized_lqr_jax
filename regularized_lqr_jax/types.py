@@ -33,16 +33,16 @@ class SequentialFactorizationOutputs:
         K: [N, m, n],
         W: [N+1, n, n],
         G_cho: [N, m, m],
-        L: [N+1, n, n],
-        S_cho: [N+1, n, n],
+        F_lu: [N+1, n, n],
+        F_piv: [N+1, n],
     """
 
     P: jax.Array
     K: jax.Array
     W: jax.Array
     G_cho: jax.Array
-    L: jax.Array
-    S_cho: jax.Array
+    F_lu: jax.Array
+    F_piv: jax.Array
 
 
 @jax.tree_util.register_dataclass
@@ -54,8 +54,8 @@ class ParallelFactorizationOutputs:
         K: [T, m, n],
         W: [T+1, n, n],
         G_cho: [N, m, m],
-        L: [N+1, n, n],
-        S_cho: [N+1, n, n],
+        F_lu: [N+1, n, n],
+        F_piv: [N+1, n],
         ApBK: [N, n, m],
         F_inv_ApBK: [N, n, m],
     """
@@ -64,8 +64,8 @@ class ParallelFactorizationOutputs:
     K: jax.Array
     W: jax.Array
     G_cho: jax.Array
-    L: jax.Array
-    S_cho: jax.Array
+    F_lu: jax.Array
+    F_piv: jax.Array
     ApBK: jax.Array
     F_inv_ApBK: jax.Array
 
