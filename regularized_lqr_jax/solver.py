@@ -236,14 +236,15 @@ def factor_parallel(inputs: FactorizationInputs) -> ParallelFactorizationOutputs
         A_l, C_l, P_l = prev
         A_r, C_r, P_r = next
 
-        IpCP = jnp.eye(n) + C_l @ P_r
-        IpCP_inv = jnp.linalg.inv(IpCP)
+        IpClPr = jnp.eye(n) + C_l @ P_r
+        IpClPr_lu = jax.scipy.linalg.lu_factor(IpClPr)
 
-        ArIClPr_inv = A_r @ IpCP_inv
+        IpClPr_inv_Al = jax.scipy.linalg.lu_solve(IpClPr_lu, A_l)
+        IpClPr_inv_Cl = jax.scipy.linalg.lu_solve(IpClPr_lu, C_l)
 
-        A_new = ArIClPr_inv @ A_l
-        C_new = symmetrize(ArIClPr_inv @ C_l @ A_r.T + C_r)
-        P_new = symmetrize(A_l.T @ P_r @ IpCP_inv @ A_l + P_l)
+        A_new = A_r @ IpClPr_inv_Al
+        C_new = symmetrize(A_r @ IpClPr_inv_Cl @ A_r.T + C_r)
+        P_new = symmetrize(A_l.T @ P_r @ IpClPr_inv_Al + P_l)
 
         return (A_new, C_new, P_new)
 
