@@ -61,6 +61,7 @@ class TestRegularizedLQR(unittest.TestCase):
         key, subkey = jax.random.split(key)
         self.Δ = jnp.abs(jax.random.uniform(subkey, (T + 1, n, n)))
         self.Δ = jax.vmap(partial(project_psd_cone, delta=1e-3))(self.Δ)
+        self.Δ_L = jax.vmap(jnp.linalg.cholesky)(self.Δ)
 
     def test(self):
         for use_parallel_method in [False, True]:
@@ -69,12 +70,12 @@ class TestRegularizedLQR(unittest.TestCase):
                 solve_method = solve_parallel if use_parallel_method else solve
 
                 factorization_inputs = FactorizationInputs(
-                    self.A,
-                    self.B,
-                    self.Q,
-                    self.M,
-                    self.R,
-                    self.Δ,
+                    A=self.A,
+                    B=self.B,
+                    Q=self.Q,
+                    M=self.M,
+                    R=self.R,
+                    Δ_L=self.Δ_L,
                 )
 
                 factorization_outputs = factor_method(factorization_inputs)
@@ -101,6 +102,42 @@ class TestRegularizedLQR(unittest.TestCase):
                     self.assertLess(jnp.linalg.norm(residual), 1e-8)
                 else:
                     self.assertLess(jnp.linalg.norm(residual), 1e-12)
+
+    def test_singular_delta_factor(self):
+        for use_parallel_method in [False, True]:
+            for Δ_L in [
+                jnp.zeros_like(self.Δ_L),
+                jnp.tile(
+                    jnp.diag(jnp.array([1.0, 0.0, 0.25, 0.0])),
+                    (self.T + 1, 1, 1),
+                ),
+            ]:
+                with self.subTest(use_parallel_method=use_parallel_method):
+                    factor_method = factor_parallel if use_parallel_method else factor
+                    solve_method = solve_parallel if use_parallel_method else solve
+
+                    factorization_inputs = FactorizationInputs(
+                        A=self.A,
+                        B=self.B,
+                        Q=self.Q,
+                        M=self.M,
+                        R=self.R,
+                        Δ_L=Δ_L,
+                    )
+                    factorization_outputs = factor_method(factorization_inputs)
+                    solve_inputs = SolveInputs(self.q, self.r, self.c)
+                    solve_outputs = solve_method(
+                        factorization_inputs,
+                        factorization_outputs,
+                        solve_inputs,
+                    )
+                    residual = compute_residual(
+                        factorization_inputs,
+                        solve_inputs,
+                        solve_outputs,
+                    )
+
+                    self.assertLess(jnp.linalg.norm(residual), 1e-8)
 
 
 if __name__ == "__main__":

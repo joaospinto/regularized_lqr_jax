@@ -18,24 +18,42 @@ def symmetrize(x):
 
 
 @jax.jit
-def stable_F_solve(F_lu, F_piv, b):
-    """
-    Solves F x = b,
-    where F = I + Δ P,
-    and (F_lu, F_piv) is the LU factorization of F.
-    """
-    return jsp.linalg.lu_solve((F_lu, F_piv), b)
+def form_delta(Δ_L):
+    """Compute Δ from a caller-supplied factor Δ_L with Δ = Δ_L Δ_L.T."""
+    return Δ_L @ Δ_L.T
 
 
 @jax.jit
-def stable_compute_W(F_lu, F_piv, P):
+def factor_symmetric_F(Δ_L, P):
+    """Factor S = I + Δ_L.T P Δ_L."""
+    S = symmetrize(jnp.eye(P.shape[-1]) + Δ_L.T @ P @ Δ_L)
+    S_cho = jsp.linalg.cho_factor(S, lower=True)[0]
+    return S_cho
+
+
+@jax.jit
+def stable_F_solve(S_cho, Δ_L, P, b):
     """
-    Computes W = P (I + Δ P)^-1
-    where (F_lu, F_piv) is the LU factorization of F = I + Δ P.
+    Solves F x = b through S = I + Δ_L.T P Δ_L, where Δ = Δ_L Δ_L.T.
+    Uses F^{-1} = I - Δ_L S^{-1} Δ_L.T P, which permits singular Δ_L.
     """
-    # W = P F^-1 => F.T W.T = P.T
-    WT = jsp.linalg.lu_solve((F_lu, F_piv), P.T, trans=1)
-    return symmetrize(WT.T)
+
+    def symmetric_factor_solve(rhs):
+        return rhs - Δ_L @ jsp.linalg.cho_solve((S_cho, True), Δ_L.T @ (P @ rhs))
+
+    x = symmetric_factor_solve(b)
+    residual = b - (jnp.eye(P.shape[-1]) + form_delta(Δ_L) @ P) @ x
+    return x + symmetric_factor_solve(residual)
+
+
+@jax.jit
+def stable_compute_W(S_cho, Δ_L, P):
+    """
+    Computes W = P (I + Δ P)^-1 from S = I + Δ_L.T P Δ_L.
+    """
+    F_inv = stable_F_solve(S_cho, Δ_L, P, jnp.eye(P.shape[-1]))
+    W = P @ F_inv
+    return symmetrize(W)
 
 
 @jax.jit
@@ -96,7 +114,8 @@ def compute_residual(
     Q = factorization_inputs.Q
     M = factorization_inputs.M
     R = factorization_inputs.R
-    Δ = factorization_inputs.Δ
+    Δ_L = factorization_inputs.Δ_L
+    Δ = jax.vmap(form_delta)(Δ_L)
 
     q = solve_inputs.q
     r = solve_inputs.r
