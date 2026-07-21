@@ -7,13 +7,18 @@ from dataclasses import dataclass
 @dataclass
 class FactorizationInputs:
     """
-    Shapes (where n, m are the state and control dimensions):
-        A: [N, n, n],
-        B: [N, n, m],
-        Q: [N+1, n, n],
-        M: [N, n, m],
-        R: [N, m, m],
-        Δ_L: [N+1, n, n],
+    LHS data for a chain or rooted tree regularized LQR problem.
+
+    For a tree, node arrays use original node order and edge arrays use
+    ``TreeContractionPlan.edge_children`` order. Shapes (where n, m are the
+    state and control dimensions, V nodes, and E edges; for a chain E=N and
+    V=N+1):
+        A: [E, n, n],
+        B: [E, n, m],
+        Q: [V, n, n],
+        M: [E, n, m],
+        R: [E, m, m],
+        Δ_L: [V, n, n],
     """
 
     A: jax.Array
@@ -47,14 +52,16 @@ class SequentialFactorizationOutputs:
 @dataclass
 class ParallelFactorizationOutputs:
     """
-    Shapes (where n, m are the state and control dimensions):
-        P: [T+1, n, n],
-        K: [T, m, n],
-        W: [T+1, n, n],
-        G_cho: [N, m, m],
-        S_cho: [N+1, n, n],
-        ApBK: [N, n, m],
-        F_inv_ApBK: [N, n, m],
+    Reusable parallel factorization for a chain or rooted tree.
+
+    Shapes (V nodes and E edges):
+        P: [V, n, n],
+        K: [E, m, n],
+        W: [V, n, n],
+        G_cho: [E, m, m],
+        S_cho: [V, n, n],
+        ApBK: [E, n, n],
+        F_inv_ApBK: [E, n, n],
     """
 
     P: jax.Array
@@ -70,10 +77,13 @@ class ParallelFactorizationOutputs:
 @dataclass
 class SolveInputs:
     """
-    Shapes (where n, m are the state and control dimensions):
-        q: [N+1, n],
-        r: [N, m],
-        c: [N+1, n],
+    RHS data for a chain or rooted tree regularized LQR problem.
+
+    For a tree, node arrays use original node order and edge arrays use the
+    contraction plan's edge order. Shapes:
+        q: [V, n],
+        r: [E, m],
+        c: [V, n],
     """
 
     q: jax.Array
@@ -85,12 +95,14 @@ class SolveInputs:
 @dataclass
 class SolveOutputs:
     """
-    Shapes (where n, m are the state and control dimensions):
-        X: [N+1, n],
-        U: [N, m],
-        Y: [N+1, n],
-        p: [N+1, n],
-        k: [N, m],
+    Solution for a chain or rooted tree (V nodes and E edges).
+
+    Shapes:
+        X: [V, n],
+        U: [E, m],
+        Y: [V, n],
+        p: [V, n],
+        k: [E, m],
     """
 
     X: jax.Array

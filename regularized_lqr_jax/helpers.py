@@ -14,7 +14,7 @@ from regularized_lqr_jax.types import (
 
 @jax.jit
 def symmetrize(x):
-    return 0.5 * (x + x.T)
+    return 0.5 * (x + jnp.swapaxes(x, -2, -1))
 
 
 @jax.jit
@@ -26,7 +26,7 @@ def form_delta(Δ_L):
 @jax.jit
 def factor_symmetric_F(Δ_L, P):
     """Factor S = I + Δ_L.T P Δ_L."""
-    S = symmetrize(jnp.eye(P.shape[-1]) + Δ_L.T @ P @ Δ_L)
+    S = symmetrize(jnp.eye(P.shape[-1], dtype=P.dtype) + Δ_L.T @ P @ Δ_L)
     S_cho = jsp.linalg.cho_factor(S, lower=True)[0]
     return S_cho
 
@@ -42,7 +42,7 @@ def stable_F_solve(S_cho, Δ_L, P, b):
         return rhs - Δ_L @ jsp.linalg.cho_solve((S_cho, True), Δ_L.T @ (P @ rhs))
 
     x = symmetric_factor_solve(b)
-    residual = b - (jnp.eye(P.shape[-1]) + form_delta(Δ_L) @ P) @ x
+    residual = b - (jnp.eye(P.shape[-1], dtype=P.dtype) + form_delta(Δ_L) @ P) @ x
     return x + symmetric_factor_solve(residual)
 
 
@@ -51,9 +51,80 @@ def stable_compute_W(S_cho, Δ_L, P):
     """
     Computes W = P (I + Δ P)^-1 from S = I + Δ_L.T P Δ_L.
     """
-    F_inv = stable_F_solve(S_cho, Δ_L, P, jnp.eye(P.shape[-1]))
+    F_inv = stable_F_solve(S_cho, Δ_L, P, jnp.eye(P.shape[-1], dtype=P.dtype))
     W = P @ F_inv
     return symmetrize(W)
+
+
+@jax.jit
+def factor_value_node(Δ_L, P):
+    """Factor ``I + ΔP`` and form the regularized value curvature ``W``."""
+    S_cho = factor_symmetric_F(Δ_L, P)
+    W = stable_compute_W(S_cho, Δ_L, P)
+    return W, S_cho
+
+
+@jax.jit
+def factor_feedback(A, B, M, R, W_child):
+    """Factor one control block given its child's regularized value."""
+    BtW = B.T @ W_child
+    H = BtW @ A + M.T
+    G = symmetrize(R + BtW @ B)
+    G_cho = jsp.linalg.cho_factor(G, lower=False)[0]
+    K = -jsp.linalg.cho_solve((G_cho, False), H)
+    return K, G_cho, H
+
+
+@jax.jit
+def solve_feedforward_from_h(G_cho, h):
+    """Solve a control feedforward block from its assembled RHS."""
+    return -jsp.linalg.cho_solve((G_cho, False), h)
+
+
+@jax.jit
+def solve_feedforward(B, r, W_child, G_cho, f_child, p_child):
+    """Assemble and solve one RHS-dependent control feedforward block."""
+    g_child = p_child - W_child @ f_child
+    h = r + B.T @ g_child
+    return solve_feedforward_from_h(G_cho, h)
+
+
+@jax.jit
+def make_edge_value(A, B, M, R, Δ_child):
+    """Eliminate one control to form a conditional edge value ``(A,C,P)``."""
+    R_cho = jsp.linalg.cho_factor(symmetrize(R), lower=True)[0]
+    RiMt = jsp.linalg.cho_solve((R_cho, True), M.T)
+    RiBt = jsp.linalg.cho_solve((R_cho, True), B.T)
+    return (
+        A - B @ RiMt,
+        symmetrize(Δ_child + B @ RiBt),
+        symmetrize(-M @ RiMt),
+    )
+
+
+@jax.jit
+def terminalize_value(path, terminal):
+    """Fold a quadratic terminal value into a conditional edge/path value."""
+    A, C, P = path
+    system = jnp.eye(A.shape[-1], dtype=A.dtype) + C @ terminal
+    solved_A = jsp.linalg.lu_solve(jsp.linalg.lu_factor(system), A)
+    return symmetrize(P + A.T @ terminal @ solved_A)
+
+
+@jax.jit
+def compose_value_functions(left, right):
+    """Compose adjacent conditional quadratic values in path order."""
+    A_left, C_left, P_left = left
+    A_right, C_right, P_right = right
+    system = jnp.eye(A_left.shape[-1], dtype=A_left.dtype) + C_left @ P_right
+    system_lu = jsp.linalg.lu_factor(system)
+    solved_A = jsp.linalg.lu_solve(system_lu, A_left)
+    solved_C = jsp.linalg.lu_solve(system_lu, C_left)
+    return (
+        A_right @ solved_A,
+        symmetrize(A_right @ solved_C @ A_right.T + C_right),
+        symmetrize(P_left + A_left.T @ P_right @ solved_A),
+    )
 
 
 @jax.jit
@@ -138,11 +209,9 @@ def compute_residual(
             (Q[T] @ X[T] - Y[T] + q[T]),
             (-X[0] - Δ[0] @ Y[0] + c[0]),
             jax.vmap(
-                lambda A, X, B, U, X_next, c_next, Δ_next, Y_next: A @ X
-                + B @ U
-                - X_next
-                + c_next
-                - Δ_next @ Y_next
+                lambda A, X, B, U, X_next, c_next, Δ_next, Y_next: (
+                    A @ X + B @ U - X_next + c_next - Δ_next @ Y_next
+                )
             )(A, X[:-1], B, U, X[1:], c[1:], Δ[1:], Y[1:]).flatten(),
         ]
     )

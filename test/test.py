@@ -139,6 +139,46 @@ class TestRegularizedLQR(unittest.TestCase):
 
                     self.assertLess(jnp.linalg.norm(residual), 1e-8)
 
+    def test_float32_is_preserved_with_x64_enabled(self):
+        n = 4
+        m = 2
+        T = 12
+        key = jax.random.PRNGKey(1)
+        key, *subkeys = jax.random.split(key, 7)
+
+        factorization_inputs = FactorizationInputs(
+            A=0.15 * jax.random.normal(subkeys[0], (T, n, n), dtype=jnp.float32),
+            B=0.2 * jax.random.normal(subkeys[1], (T, n, m), dtype=jnp.float32),
+            Q=jnp.tile(2.0 * jnp.eye(n, dtype=jnp.float32), (T + 1, 1, 1)),
+            M=jnp.zeros((T, n, m), dtype=jnp.float32),
+            R=jnp.tile(2.0 * jnp.eye(m, dtype=jnp.float32), (T, 1, 1)),
+            Δ_L=jnp.tile(0.1 * jnp.eye(n, dtype=jnp.float32), (T + 1, 1, 1)),
+        )
+        solve_inputs = SolveInputs(
+            0.1 * jax.random.normal(subkeys[2], (T + 1, n), dtype=jnp.float32),
+            0.1 * jax.random.normal(subkeys[3], (T, m), dtype=jnp.float32),
+            0.1 * jax.random.normal(subkeys[4], (T + 1, n), dtype=jnp.float32),
+        )
+
+        solutions = []
+        for factor_method, solve_method in (
+            (factor, solve),
+            (factor_parallel, solve_parallel),
+        ):
+            factorization = factor_method(factorization_inputs)
+            solution = solve_method(factorization_inputs, factorization, solve_inputs)
+            residual = compute_residual(factorization_inputs, solve_inputs, solution)
+
+            for value in jax.tree.leaves((factorization, solution)):
+                self.assertEqual(value.dtype, jnp.float32)
+            self.assertLess(jnp.max(jnp.abs(residual)), 2e-5)
+            solutions.append(solution)
+
+        for sequential, parallel in zip(
+            jax.tree.leaves(solutions[0]), jax.tree.leaves(solutions[1])
+        ):
+            self.assertTrue(jnp.allclose(sequential, parallel, rtol=2e-5, atol=2e-5))
+
 
 if __name__ == "__main__":
     unittest.main()
