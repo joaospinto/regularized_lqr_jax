@@ -10,7 +10,7 @@ class FactorizationInputs:
     LHS data for a chain or rooted tree regularized LQR problem.
 
     For a tree, node arrays use original node order and edge arrays use
-    ``TreeContractionPlan.edge_children`` order. Shapes (where n, m are the
+    contraction plan's ``edge_children`` order. Shapes (where n, m are the
     state and control dimensions, V nodes, and E edges; for a chain E=N and
     V=N+1):
         A: [E, n, n],
@@ -31,28 +31,9 @@ class FactorizationInputs:
 
 @jax.tree_util.register_dataclass
 @dataclass
-class SequentialFactorizationOutputs:
+class FactorizationOutputs:
     """
-    Shapes (where n, m are the state and control dimensions):
-        P: [N+1, n, n],
-        K: [N, m, n],
-        W: [N+1, n, n],
-        G_cho: [N, m, m],
-        S_cho: [N+1, n, n],
-    """
-
-    P: jax.Array
-    K: jax.Array
-    W: jax.Array
-    G_cho: jax.Array
-    S_cho: jax.Array
-
-
-@jax.tree_util.register_dataclass
-@dataclass
-class ParallelFactorizationOutputs:
-    """
-    Reusable parallel factorization for a chain or rooted tree.
+    Reusable compositional factorization for a chain or rooted tree.
 
     Shapes (V nodes and E edges):
         P: [V, n, n],
@@ -60,8 +41,8 @@ class ParallelFactorizationOutputs:
         W: [V, n, n],
         G_cho: [E, m, m],
         S_cho: [V, n, n],
-        ApBK: [E, n, n],
-        F_inv_ApBK: [E, n, n],
+        ApBK: [E, n, n] for compositional plans, otherwise None,
+        F_inv_ApBK: [E, n, n] for compositional plans, otherwise None,
     """
 
     P: jax.Array
@@ -69,8 +50,14 @@ class ParallelFactorizationOutputs:
     W: jax.Array
     G_cho: jax.Array
     S_cho: jax.Array
-    ApBK: jax.Array
-    F_inv_ApBK: jax.Array
+    ApBK: jax.Array | None
+    F_inv_ApBK: jax.Array | None
+
+
+# Compatibility import names. Sequential and parallel execution now use the
+# same canonical factorization representation and numerical implementation.
+SequentialFactorizationOutputs = FactorizationOutputs
+ParallelFactorizationOutputs = FactorizationOutputs
 
 
 @jax.tree_util.register_dataclass

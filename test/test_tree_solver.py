@@ -1,4 +1,4 @@
-"""Correctness tests for parallel regularized LQR on rooted trees."""
+"""Correctness tests for regularized LQR on rooted trees."""
 
 from __future__ import annotations
 
@@ -7,22 +7,26 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax_bidirectional_tree_rake_compress import make_tree_contraction_plan
+from jax_bidirectional_tree_rake_compress import (
+    ContractionExecutor,
+    plan_statistics,
+)
 
-from regularized_lqr_jax.solver import factor_parallel, solve_parallel
+from regularized_lqr_jax.solver import factor, factor_parallel, solve, solve_parallel
 from regularized_lqr_jax.tree_solver import (
     compute_tree_residual,
-    factor_and_solve_tree_parallel,
-    factor_tree_parallel,
-    solve_tree_parallel,
+    factor_and_solve_tree,
+    factor_tree,
+    make_tree_lqr_plan,
+    solve_tree,
 )
 from regularized_lqr_jax.types import FactorizationInputs, SolveInputs
 
 jax.config.update("jax_enable_x64", True)
 
 
-def _random_problem(parents, seed=0, n=3, m=2, regularized=True):
-    plan = make_tree_contraction_plan(parents)
+def _random_problem(parents, seed=0, n=3, m=2, regularized=True, parallel=True):
+    plan = make_tree_lqr_plan(parents, parallel=parallel)
     rng = np.random.default_rng(seed)
     V, E = plan.num_nodes, plan.num_edges
     A = 0.35 * rng.standard_normal((E, n, n))
@@ -156,6 +160,40 @@ def _random_permuted_parents(rng, num_nodes):
 
 
 class TestTreeSolver(unittest.TestCase):
+    def test_plan_selects_executor_from_topology_and_mode(self):
+        sequential_tree = make_tree_lqr_plan([-1, 0, 0, 1], parallel=False)
+        parallel_tree = make_tree_lqr_plan([-1, 0, 0, 1], parallel=True)
+        sequential_chain = make_tree_lqr_plan([-1, 0, 1, 2], parallel=False)
+        parallel_chain = make_tree_lqr_plan([-1, 0, 1, 2], parallel=True)
+        internal_root_chain = make_tree_lqr_plan([1, 2, -1, 2, 3], parallel=True)
+
+        self.assertIs(sequential_tree.executor, ContractionExecutor.UNROLLED)
+        self.assertEqual(plan_statistics(sequential_tree).num_compressions, 0)
+        self.assertIs(parallel_tree.executor, ContractionExecutor.UNROLLED)
+        self.assertIs(sequential_chain.executor, ContractionExecutor.SCAN)
+        self.assertIs(parallel_chain.executor, ContractionExecutor.ASSOCIATIVE_SCAN)
+        self.assertIs(internal_root_chain.executor, ContractionExecutor.UNROLLED)
+
+    def test_factorization_only_stores_compositional_data_when_needed(self):
+        cases = (
+            ([-1, 0, 1, 2], False, False),
+            ([-1, 0, 1, 2], True, True),
+            ([-1, 0, 0, 0], True, False),
+            ([-1, 0, 0, 1, 1, 2, 2, 5, 5, 8, 3], True, True),
+        )
+        for parents, parallel, expected_compositional_data in cases:
+            with self.subTest(parents=parents, parallel=parallel):
+                plan, factor_inputs, _ = _random_problem(
+                    parents, seed=len(parents), n=2, m=1, parallel=parallel
+                )
+                outputs = factor_tree(plan, factor_inputs)
+                if expected_compositional_data:
+                    self.assertIsNotNone(outputs.ApBK)
+                    self.assertIsNotNone(outputs.F_inv_ApBK)
+                else:
+                    self.assertIsNone(outputs.ApBK)
+                    self.assertIsNone(outputs.F_inv_ApBK)
+
     def test_tree_solution_has_small_kkt_residual(self):
         parent_arrays = (
             [-1],
@@ -167,45 +205,63 @@ class TestTreeSolver(unittest.TestCase):
         )
         for parents in parent_arrays:
             for regularized in (False, True):
-                with self.subTest(parents=parents, regularized=regularized):
-                    plan, factor_inputs, solve_inputs = _random_problem(
-                        parents, seed=len(parents), regularized=regularized
-                    )
-                    solution = factor_and_solve_tree_parallel(
-                        plan, factor_inputs, solve_inputs
-                    )
-                    residual = compute_tree_residual(
-                        plan, factor_inputs, solve_inputs, solution
-                    )
-                    np.testing.assert_allclose(residual, 0.0, atol=2e-9, rtol=2e-9)
+                for parallel in (False, True):
+                    with self.subTest(
+                        parents=parents,
+                        regularized=regularized,
+                        parallel=parallel,
+                    ):
+                        plan, factor_inputs, solve_inputs = _random_problem(
+                            parents,
+                            seed=len(parents),
+                            regularized=regularized,
+                            parallel=parallel,
+                        )
+                        solution = factor_and_solve_tree(
+                            plan, factor_inputs, solve_inputs
+                        )
+                        residual = compute_tree_residual(
+                            plan, factor_inputs, solve_inputs, solution
+                        )
+                        np.testing.assert_allclose(residual, 0.0, atol=2e-9, rtol=2e-9)
 
-    def test_chain_matches_existing_associative_scan(self):
+    def test_chain_facades_match_canonical_tree_implementation(self):
         num_nodes = 9
         for regularized in (False, True):
-            with self.subTest(regularized=regularized):
-                plan, factor_inputs, solve_inputs = _random_problem(
-                    [-1, *range(num_nodes - 1)],
-                    seed=31,
-                    n=4,
-                    m=2,
-                    regularized=regularized,
-                )
-                tree_solution = factor_and_solve_tree_parallel(
-                    plan, factor_inputs, solve_inputs
-                )
-                chain_factorization = factor_parallel(factor_inputs)
-                chain_solution = solve_parallel(
-                    factor_inputs, chain_factorization, solve_inputs
-                )
-                np.testing.assert_allclose(
-                    tree_solution.X, chain_solution.X, atol=2e-9, rtol=2e-9
-                )
-                np.testing.assert_allclose(
-                    tree_solution.U, chain_solution.U, atol=2e-9, rtol=2e-9
-                )
-                np.testing.assert_allclose(
-                    tree_solution.Y, chain_solution.Y, atol=2e-9, rtol=2e-9
-                )
+            for parallel in (False, True):
+                with self.subTest(regularized=regularized, parallel=parallel):
+                    plan, factor_inputs, solve_inputs = _random_problem(
+                        [-1, *range(num_nodes - 1)],
+                        seed=31,
+                        n=4,
+                        m=2,
+                        regularized=regularized,
+                        parallel=parallel,
+                    )
+                    factor_method = factor_parallel if parallel else factor
+                    solve_method = solve_parallel if parallel else solve
+                    tree_factorization = factor_tree(plan, factor_inputs)
+                    chain_factorization = factor_method(factor_inputs)
+                    tree_solution = solve_tree(
+                        plan, factor_inputs, tree_factorization, solve_inputs
+                    )
+                    chain_solution = solve_method(
+                        factor_inputs, chain_factorization, solve_inputs
+                    )
+                    for tree_value, chain_value in zip(
+                        jax.tree.leaves(tree_factorization),
+                        jax.tree.leaves(chain_factorization),
+                    ):
+                        np.testing.assert_allclose(
+                            tree_value, chain_value, atol=1e-12, rtol=1e-12
+                        )
+                    for tree_value, chain_value in zip(
+                        jax.tree.leaves(tree_solution),
+                        jax.tree.leaves(chain_solution),
+                    ):
+                        np.testing.assert_allclose(
+                            tree_value, chain_value, atol=1e-12, rtol=1e-12
+                        )
 
     def test_tree_solution_matches_independent_dense_kkt(self):
         parent_arrays = (
@@ -225,9 +281,7 @@ class TestTreeSolver(unittest.TestCase):
                         m=2,
                         regularized=regularized,
                     )
-                    solution = factor_and_solve_tree_parallel(
-                        plan, factor_inputs, solve_inputs
-                    )
+                    solution = factor_and_solve_tree(plan, factor_inputs, solve_inputs)
                     dense_X, dense_U, dense_Y = _dense_kkt_solution(
                         plan, factor_inputs, solve_inputs
                     )
@@ -257,9 +311,7 @@ class TestTreeSolver(unittest.TestCase):
                     m=m,
                     regularized=regularized,
                 )
-                solution = factor_and_solve_tree_parallel(
-                    plan, factor_inputs, solve_inputs
-                )
+                solution = factor_and_solve_tree(plan, factor_inputs, solve_inputs)
                 dense_X, dense_U, dense_Y = _dense_kkt_solution(
                     plan, factor_inputs, solve_inputs
                 )
@@ -276,7 +328,7 @@ class TestTreeSolver(unittest.TestCase):
         plan, factor_inputs, solve_inputs = _random_problem(
             [-1, 0, 0, 1, 1, 2, 2, 5, 5, 8, 3], seed=8
         )
-        factorization = factor_tree_parallel(plan, factor_inputs)
+        factorization = factor_tree(plan, factor_inputs)
 
         for scale in (1.0, -0.4):
             with self.subTest(scale=scale):
@@ -285,7 +337,7 @@ class TestTreeSolver(unittest.TestCase):
                     r=scale * solve_inputs.r,
                     c=scale * solve_inputs.c,
                 )
-                solution = solve_tree_parallel(plan, factor_inputs, factorization, rhs)
+                solution = solve_tree(plan, factor_inputs, factorization, rhs)
                 residual = compute_tree_residual(plan, factor_inputs, rhs, solution)
                 np.testing.assert_allclose(residual, 0.0, atol=2e-9, rtol=2e-9)
 
@@ -293,11 +345,11 @@ class TestTreeSolver(unittest.TestCase):
         plan, factor_inputs, solve_inputs = _random_problem(
             [-1, 0, 0, 1, 1, 2, 5], seed=17, n=2, m=1
         )
-        factorization = factor_tree_parallel(plan, factor_inputs)
+        factorization = factor_tree(plan, factor_inputs)
 
         def objective(q):
             rhs = SolveInputs(q=q, r=solve_inputs.r, c=solve_inputs.c)
-            solution = solve_tree_parallel(plan, factor_inputs, factorization, rhs)
+            solution = solve_tree(plan, factor_inputs, factorization, rhs)
             return jnp.sum(solution.X**2) + jnp.sum(solution.U**2)
 
         gradient = jax.jit(jax.grad(objective))(solve_inputs.q)
@@ -317,7 +369,7 @@ class TestTreeSolver(unittest.TestCase):
         solve_inputs = jax.tree.map(
             lambda value: value.astype(jnp.float32), solve_inputs
         )
-        solution = factor_and_solve_tree_parallel(plan, factor_inputs, solve_inputs)
+        solution = factor_and_solve_tree(plan, factor_inputs, solve_inputs)
         residual = compute_tree_residual(plan, factor_inputs, solve_inputs, solution)
         np.testing.assert_allclose(residual, 0.0, atol=2e-4, rtol=2e-4)
 
@@ -332,7 +384,7 @@ class TestTreeSolver(unittest.TestCase):
             Δ_L=factor_inputs.Δ_L,
         )
         with self.assertRaisesRegex(ValueError, "one block per plan edge"):
-            factor_tree_parallel(plan, bad_inputs)
+            factor_tree(plan, bad_inputs)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Parallel regularized LQR on a rooted tree
+# Regularized LQR on a rooted tree
 
 ## Problem and data layout
 
@@ -24,10 +24,11 @@ gives exact dynamics. The implementation assumes uniform state and control
 dimensions, positive-definite (R_e), and the usual convexity conditions on
 the quadratic objective.
 
-`make_tree_contraction_plan(parents)` is the only topology preprocessing. It
-runs on the host once. Node arrays retain caller order; edge arrays follow
-`plan.edge_children`, with endpoints exposed by `plan.edge_parents` and
-`plan.edge_children`. Neither factor nor solve performs host traversal.
+`make_tree_lqr_plan(parents, parallel=...)` is the only topology preprocessing.
+It runs on the host once and selects the contraction executor. Node arrays
+retain caller order; edge arrays follow `plan.edge_children`, with endpoints
+exposed by `plan.edge_parents` and `plan.edge_children`. Neither factor nor
+solve performs host traversal.
 
 ## Quadratic factorization
 
@@ -48,8 +49,9 @@ with
 \bar P_e=-M_eR_e^{-1}M_e^T.
 \]
 
-A path summary is the fixed-size triple ((A,C,P)); an active node stores its
-accumulated subtree quadratic (P_i). The contraction rules are:
+When compression is possible, a path summary is the fixed-size triple
+((A,C,P)); an active node stores its accumulated subtree quadratic (P_i). The
+contraction rules are:
 
 - **Rake:** fold a completed leaf value into its incoming path and send the
   resulting quadratic to its parent.
@@ -85,6 +87,12 @@ G_e &= R_e+B_e^TW_jB_e,\\
 K_e &=-G_e^{-1}(B_e^TW_jA_e+M_e^T),\\
 T_e &=(I+\Delta_jP_j)^{-1}(A_e+B_eK_e).
 \end{aligned}
+
+For a rake-only plan, the same contraction executor applies the equivalent
+Riccati rake directly to each original edge. This retains the stable symmetric
+factorizations used by the sequential method; it is a schedule-specific local
+algebra inside the same `factor_tree`/`solve_tree` implementation, not a
+separate chain solver.
 \]
 
 The implementation factors (I+\Delta_{L,j}^TP_j\Delta_{L,j}) instead of
@@ -140,9 +148,10 @@ u_e=K_ex_i+k_e,\qquad y_i=P_ix_i+p_i.
 
 ## Code reuse and the chain cases
 
-Sequential chains, parallel chains, and parallel trees share the numerical
-primitives for node regularization, control feedback, feedforward solves,
-conditional edge values, terminal folds, and path composition.
+Sequential chains, parallel chains, sequential trees, and parallel trees use
+the same `factor_tree` and `solve_tree` implementation. The `factor`, `solve`,
+`factor_parallel`, and `solve_parallel` names only construct an implicit
+root-at-zero chain plan and delegate to those functions.
 
 A sequential Riccati pass can be viewed algebraically as repeatedly raking the
 terminal leaf of a chain. A literal rake-only parallel schedule would still
@@ -151,3 +160,9 @@ sequential chain. The associative-scan chain path and rake--compress tree path
 both have (O(\log N)) depth. On a pure chain, a work-efficient associative
 scan has roughly the same total composition count and lower scheduling
 overhead, so it remains the preferred chain specialization.
+
+For the tree API, a sequential chain uses a rake-only `lax.scan`; a
+parallel chain uses the associative-scan contraction executor. Branching trees
+use the unrolled executor with rake-only or rake--compress scheduling according
+to the requested mode. The chain API is only a convenience facade for callers
+whose arrays are already in canonical chain order.

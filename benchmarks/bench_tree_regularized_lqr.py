@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark setup, factor, solve, and combined parallel tree-LQR phases."""
+"""Benchmark setup, factor, solve, and combined tree-LQR phases."""
 
 from __future__ import annotations
 
@@ -10,15 +10,13 @@ import time
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax_bidirectional_tree_rake_compress import (
-    make_tree_contraction_plan,
-    plan_statistics,
-)
+from jax_bidirectional_tree_rake_compress import plan_statistics
 
 from regularized_lqr_jax.tree_solver import (
-    factor_and_solve_tree_parallel,
-    factor_tree_parallel,
-    solve_tree_parallel,
+    factor_and_solve_tree,
+    factor_tree,
+    make_tree_lqr_plan,
+    solve_tree,
 )
 from regularized_lqr_jax.types import FactorizationInputs, SolveInputs
 
@@ -101,35 +99,39 @@ def main():
         default="8,16,32,64,128,256,512,1024,2048,4096,8192",
     )
     parser.add_argument("--topologies", default="chain,balanced,comb,star")
+    parser.add_argument(
+        "--execution", choices=("sequential", "parallel"), default="parallel"
+    )
     args = parser.parse_args()
     rows = []
+    parallel = args.execution == "parallel"
 
     for topology in args.topologies.split(","):
         for nodes in (int(value) for value in args.sizes.split(",")):
             parents = parents_for(topology, nodes)
-            plan = make_tree_contraction_plan(parents)
+            plan = make_tree_lqr_plan(parents, parallel=parallel)
             lhs, rhs = make_problem(plan, seed=nodes, n=args.n, m=args.m)
 
-            factorization = jax.block_until_ready(factor_tree_parallel(plan, lhs))
-            jax.block_until_ready(solve_tree_parallel(plan, lhs, factorization, rhs))
-            jax.block_until_ready(factor_and_solve_tree_parallel(plan, lhs, rhs))
+            factorization = jax.block_until_ready(factor_tree(plan, lhs))
+            jax.block_until_ready(solve_tree(plan, lhs, factorization, rhs))
+            jax.block_until_ready(factor_and_solve_tree(plan, lhs, rhs))
 
             setup_ms = median_ms(
-                lambda: make_tree_contraction_plan(parents), args.repeats
+                lambda: make_tree_lqr_plan(parents, parallel=parallel), args.repeats
             )
-            factor_ms = median_ms(lambda: factor_tree_parallel(plan, lhs), args.repeats)
+            factor_ms = median_ms(lambda: factor_tree(plan, lhs), args.repeats)
             solve_ms = median_ms(
-                lambda: solve_tree_parallel(plan, lhs, factorization, rhs),
+                lambda: solve_tree(plan, lhs, factorization, rhs),
                 args.repeats,
             )
             combined_ms = median_ms(
-                lambda: factor_and_solve_tree_parallel(plan, lhs, rhs),
+                lambda: factor_and_solve_tree(plan, lhs, rhs),
                 args.repeats,
             )
 
             def full_run():
-                dynamic_plan = make_tree_contraction_plan(parents)
-                return factor_and_solve_tree_parallel(dynamic_plan, lhs, rhs)
+                dynamic_plan = make_tree_lqr_plan(parents, parallel=parallel)
+                return factor_and_solve_tree(dynamic_plan, lhs, rhs)
 
             full_ms = median_ms(full_run, args.repeats)
             rows.append(
@@ -145,7 +147,10 @@ def main():
                 ]
             )
 
-    print(f"backend={jax.default_backend()} n={args.n} m={args.m}")
+    print(
+        f"backend={jax.default_backend()} execution={args.execution} "
+        f"n={args.n} m={args.m}"
+    )
     pretty_table(
         [
             "topology",
