@@ -5,7 +5,7 @@ requires-python = ">= 3.12"
 dependencies = [
   "absl-py",
   "jax",
-  "jax-bidirectional-tree-rake-compress==0.3.2",
+  "jax-bidirectional-tree-rake-compress==0.3.3",
 ]
 authors = [
   {name = "Joao Sousa-Pinto", email = "joaospinto@gmail.com"},
