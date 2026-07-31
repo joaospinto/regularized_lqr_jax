@@ -33,15 +33,15 @@ wheels = [
 
 [[package]]
 name = "jax-bidirectional-tree-rake-compress"
-version = "0.3.1"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/be/4e/73047cd3705b042d4cce0cf72af9c4484883bd5a213e9e146579e08c4adb/jax_bidirectional_tree_rake_compress-0.3.1.tar.gz", hash = "sha256:17352f6ba65b71dae557e7c8caa5e43f1e575a5aa119e9cfd13ea5f964fdf2e7", size = 31820, upload-time = "2026-07-31T03:12:28.056Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/28/1a6351d2e15a1bbefac53c416dae2cd41b1a44f91fedd4542055d3f670b5/jax_bidirectional_tree_rake_compress-0.3.2.tar.gz", hash = "sha256:bf338477e492e120919652d78aa2f97aa180d45b6f79a4effe72ca86065f42a5", size = 32968, upload-time = "2026-07-31T09:59:12.282Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/96/ce0cb980ab80b1874db8aebc811979ba17f91724d88dce1250952538b177/jax_bidirectional_tree_rake_compress-0.3.1-py3-none-any.whl", hash = "sha256:a7dafc2adaaa8ad492876c64eb42616a64917bb8e0041654e244f05c847205c7", size = 17362, upload-time = "2026-07-31T03:12:26.709Z" },
+    { url = "https://files.pythonhosted.org/packages/88/e9/bad7dc1bf987791f392ec62cc84af203308b742dc35657ccc54f178becac/jax_bidirectional_tree_rake_compress-0.3.2-py3-none-any.whl", hash = "sha256:3c4bc60ab51d850581f598488fafd498295025c80ff922d5dafa3286a6fa1feb", size = 18060, upload-time = "2026-07-31T09:59:11.184Z" },
 ]
 
 [[package]]
@@ -194,7 +194,7 @@ dependencies = [
 requires-dist = [
     { name = "absl-py" },
     { name = "jax" },
-    { name = "jax-bidirectional-tree-rake-compress", specifier = "==0.3.1" },
+    { name = "jax-bidirectional-tree-rake-compress", specifier = "==0.3.2" },
 ]
 
 [[package]]
